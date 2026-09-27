@@ -1,0 +1,28 @@
+{
+  "app": {
+    "name": "Project AEGIS",
+    "version": "1.0.0",
+    "port": 3000,
+    "bindAddress": "127.0.0.1",
+    "language": "english"
+  },
+  "trading": {
+    "demoMode": true,
+    "defaultSymbol": "BTCUSDT",
+    "riskPercentage": 1.0,
+    "maxPositions": 5
+  },
+  "database": {
+    "type": "sqlite",
+    "filename": "./data/aegis.db"
+  },
+  "telegram": {
+    "enabled": false,
+    "botToken": "",
+    "authorizedUsers": []
+  },
+  "logging": {
+    "level": "info",
+    "file": "./logs/system.log"
+  }
+}

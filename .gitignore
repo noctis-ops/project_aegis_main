@@ -1,0 +1,13 @@
+@"
+.env
+.env.*
+!.env.example
+config.ini
+config.local.ini
+secrets/
+*.key
+*.pem
+target/
+node_modules/
+*.log
+"@ | Set-Content .gitignore
