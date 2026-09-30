@@ -29,7 +29,7 @@ impl HeartbeatMonitor {
     }
     
     /// Start the heartbeat monitoring task
-    pub fn start(mut self) {
+    pub fn start(self) {
         tokio::spawn(async move {
             let mut interval = interval(Duration::from_millis(self.interval_ms));
             

@@ -19,7 +19,9 @@ impl EventBus {
     
     /// Send an event through the bus (non-blocking)
     pub fn send(&mut self, event: MarketDataEvent) -> Result<(), MarketDataEvent> {
-        self.producer.push(event).map_err(|e| e.into_inner())
+        self.producer.push(event).map_err(|e| match e {
+            rtrb::PushError::Full(event) => event,
+        })
     }
     
     /// Receive an event from the bus (non-blocking)
