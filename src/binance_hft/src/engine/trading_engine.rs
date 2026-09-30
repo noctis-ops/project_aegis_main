@@ -7,7 +7,6 @@ use crate::engine::EventBus;
 use tokio::sync::mpsc;
 use tracing::{info, error, warn};
 use std::collections::HashMap;
-use crate::core::constants::*;
 
 /// Main trading engine
 pub struct TradingEngine {
@@ -55,8 +54,10 @@ impl TradingEngine {
     pub async fn start(&mut self) -> Result<(), HftError> {
         info!("Initializing trading engine for symbols: {:?}", self.symbols);
         
-        // Initialize components for each symbol
-        for symbol in &self.symbols {
+        // Clone the symbol list to avoid holding an immutable borrow of `self`
+        // while `initialize_symbol()` needs `&mut self`.
+        let symbols = self.symbols.clone();
+        for symbol in &symbols {
             self.initialize_symbol(symbol).await?;
         }
         
@@ -148,7 +149,7 @@ impl TradingEngine {
         
         // Update heartbeat
         if let Some(heartbeat_monitor) = self.heartbeat_monitors.get_mut(&symbol) {
-            // Note: In a real implementation, we would need a mutable reference to update heartbeat
+            heartbeat_monitor.update_heartbeat();
         }
         
         // Get order book for this symbol

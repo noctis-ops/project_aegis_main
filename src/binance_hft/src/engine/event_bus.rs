@@ -2,7 +2,6 @@
 
 use crate::core::MarketDataEvent;
 use rtrb::{RingBuffer, Producer, Consumer};
-use tracing::{error, warn};
 use crate::core::constants::*;
 
 /// Internal event bus using SPSC ring buffers
@@ -20,7 +19,7 @@ impl EventBus {
     
     /// Send an event through the bus (non-blocking)
     pub fn send(&mut self, event: MarketDataEvent) -> Result<(), MarketDataEvent> {
-        self.producer.push(event)
+        self.producer.push(event).map_err(|e| e.into_inner())
     }
     
     /// Receive an event from the bus (non-blocking)

@@ -5,7 +5,6 @@ use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 use futures_util::{SinkExt, StreamExt};
 use url::Url;
 use tracing::{info, error, warn};
-use std::sync::Arc;
 use tokio::sync::mpsc;
 use crate::core::constants::*;
 
