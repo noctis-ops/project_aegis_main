@@ -13,6 +13,9 @@ pub enum HftError {
     #[error("Network error: {0}")]
     NetworkError(#[from] reqwest::Error),
     
+    #[error("URL parse error: {0}")]
+    UrlParseError(#[from] url::ParseError),
+    
     #[error("Sequence gap detected: expected {expected}, got {actual}")]
     SequenceGap { expected: u64, actual: u64 },
     

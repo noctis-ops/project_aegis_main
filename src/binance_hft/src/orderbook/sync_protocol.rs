@@ -44,7 +44,7 @@ impl SyncProtocol {
         order_book: &mut T,
     ) -> Result<(), HftError>
     where
-        T: crate::orderbook::local_order_book::LocalOrderBookTrait,
+        T: LocalOrderBookTrait,
     {
         info!("Fetching order book snapshot for {}", symbol);
         

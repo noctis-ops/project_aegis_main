@@ -1,8 +1,8 @@
 //! Heartbeat monitoring for WebSocket connections
 
 use tokio::time::{interval, Duration};
-use tracing::{warn, info};
-use crate::core::{HftError, MarketDataEvent};
+use tracing::warn;
+use crate::core::MarketDataEvent;
 use tokio::sync::mpsc;
 use crate::core::constants::*;
 
