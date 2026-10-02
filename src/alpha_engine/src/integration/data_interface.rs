@@ -2,7 +2,7 @@
 
 use crate::core::MarketDataEvent;
 use crossbeam::channel::Receiver;
-use tracing::{info, error};
+use tracing::error;
 
 /// Data interface for receiving market data
 pub struct DataInterface {

@@ -17,11 +17,12 @@ impl ExecutionInterface {
     
     /// Send trade intent to execution layer
     pub fn send_trade_intent(&self, intent: TradeIntent) -> Result<(), Box<dyn std::error::Error>> {
+        // `send` consumes the intent, so log its identity BEFORE the move —
+        // no clone/allocation on the hot path.
+        info!("Sending trade intent for symbol: {}", intent.symbol);
+        
         match self.sender.send(intent) {
-            Ok(_) => {
-                info!("Trade intent sent for symbol: {}", intent.symbol);
-                Ok(())
-            }
+            Ok(_) => Ok(()),
             Err(e) => {
                 error!("Failed to send trade intent: {}", e);
                 Err(Box::new(e))

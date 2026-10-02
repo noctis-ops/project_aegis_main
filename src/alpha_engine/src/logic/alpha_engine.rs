@@ -1,18 +1,17 @@
 //! Main Alpha Engine implementation
 
-use crate::core::{MarketDataEvent, TradeSignal, TradeIntent, SignalState, WalletBalance};
-use crate::features::{
-    calculate_obi, 
-    TradeFlowToxicity, 
-    detect_liquidity_voids, 
-    OpenInterestDelta
-};
+use crate::core::{MarketDataEvent, TradeIntent, SignalState, WalletBalance, AlphaError};
 use crate::logic::{SignalGenerator, PositionSizingEngine, RiskManager};
-use crossbeam::channel::{Receiver, Sender, unbounded};
+use crossbeam::channel::{Receiver, Sender};
 use tracing::{info, warn, error, debug};
 use std::collections::HashMap;
 
 /// Main Alpha Engine
+///
+/// The engine is fully synchronous by design: it consumes market data from a
+/// crossbeam channel (fed by Layer 1) and publishes trade intents to another
+/// crossbeam channel (consumed by Layer 3). It therefore runs on a plain
+/// thread with no async runtime.
 pub struct AlphaEngine {
     symbols: Vec<String>,
     signal_states: HashMap<String, SignalState>,
@@ -61,12 +60,12 @@ impl AlphaEngine {
         }
     }
     
-    /// Set market data receiver channel
+    /// Set market data receiver channel (integration seam with Layer 1)
     pub fn set_market_data_receiver(&mut self, rx: Receiver<MarketDataEvent>) {
         self.market_data_rx = Some(rx);
     }
     
-    /// Set trade signal sender channel
+    /// Set trade signal sender channel (integration seam with Layer 3)
     pub fn set_trade_signal_sender(&mut self, tx: Sender<TradeIntent>) {
         self.trade_signal_tx = Some(tx);
     }
@@ -76,23 +75,27 @@ impl AlphaEngine {
         self.wallet_balances.insert(currency, balance);
     }
     
-    /// Start the alpha engine
-    pub async fn start(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+    /// Start the alpha engine.
+    ///
+    /// Blocks the calling thread and drives the processing loop until the
+    /// market data channel disconnects (all Layer 1 senders dropped) or a
+    /// fatal error occurs. Re-wiring channels via the setters allows a
+    /// restart after a disconnect.
+    pub fn start(&mut self) -> Result<(), AlphaError> {
         info!("Initializing Alpha Engine for symbols: {:?}", self.symbols);
         
-        // Initialize components for each symbol
-        for symbol in &self.symbols {
+        // Clone the symbol list to avoid holding an immutable borrow of
+        // `self` while `initialize_symbol()` needs `&mut self`.
+        let symbols = self.symbols.clone();
+        for symbol in &symbols {
             self.initialize_symbol(symbol)?;
         }
         
-        // Start the main processing loop
-        self.run_processing_loop().await?;
-        
-        Ok(())
+        self.run_processing_loop()
     }
     
     /// Initialize components for a symbol
-    fn initialize_symbol(&mut self, symbol: &str) -> Result<(), Box<dyn std::error::Error>> {
+    fn initialize_symbol(&mut self, symbol: &str) -> Result<(), AlphaError> {
         info!("Initializing components for symbol: {}", symbol);
         
         // Initialize signal state
@@ -121,25 +124,33 @@ impl AlphaEngine {
     }
     
     /// Main processing loop
-    async fn run_processing_loop(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+    fn run_processing_loop(&mut self) -> Result<(), AlphaError> {
         info!("Starting main processing loop");
         
-        // We need channels for communication
-        if self.market_data_rx.is_none() || self.trade_signal_tx.is_none() {
-            return Err("Market data receiver and trade signal sender must be set".into());
-        }
-        
-        let market_data_rx = self.market_data_rx.as_ref().unwrap();
-        let trade_signal_tx = self.trade_signal_tx.as_ref().unwrap();
+        // Take ownership of the channels: this loop is their terminal
+        // consumer (a single consumer per crossbeam queue, as designed).
+        let market_data_rx = match self.market_data_rx.take() {
+            Some(rx) => rx,
+            None => return Err(AlphaError::ChannelsNotInitialized),
+        };
+        let trade_signal_tx = match self.trade_signal_tx.take() {
+            Some(tx) => tx,
+            None => return Err(AlphaError::ChannelsNotInitialized),
+        };
         
         loop {
-            // Process market data events
-            if let Ok(event) = market_data_rx.try_recv() {
-                self.process_market_data_event(event, trade_signal_tx)?;
+            // Blocking receive: parks the thread at zero CPU while idle and
+            // wakes immediately when Layer 1 publishes an event — no polling
+            // delay and no busy-wait loop.
+            match market_data_rx.recv() {
+                Ok(event) => self.process_market_data_event(event, &trade_signal_tx)?,
+                Err(_) => {
+                    // Every Layer 1 sender was dropped: no more data can
+                    // arrive, so shut down cleanly.
+                    warn!("Market data channel disconnected, stopping alpha engine");
+                    return Ok(());
+                }
             }
-            
-            // Small delay to prevent busy looping
-            tokio::time::sleep(tokio::time::Duration::from_micros(10)).await;
         }
     }
     
@@ -148,7 +159,7 @@ impl AlphaEngine {
         &mut self, 
         event: MarketDataEvent, 
         trade_signal_tx: &Sender<TradeIntent>
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<(), AlphaError> {
         match event {
             MarketDataEvent::OrderBookUpdate(order_book) => {
                 self.process_order_book_update(order_book, trade_signal_tx)?;
@@ -166,7 +177,7 @@ impl AlphaEngine {
         &mut self, 
         order_book: crate::core::OrderBookSnapshot, 
         trade_signal_tx: &Sender<TradeIntent>
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<(), AlphaError> {
         let symbol = order_book.symbol.clone();
         
         // Get signal generator for this symbol
@@ -210,7 +221,7 @@ impl AlphaEngine {
     }
     
     /// Process aggregated trades
-    fn process_agg_trade(&mut self, trade: crate::core::AggTrade) -> Result<(), Box<dyn std::error::Error>> {
+    fn process_agg_trade(&mut self, trade: crate::core::AggTrade) -> Result<(), AlphaError> {
         let symbol = trade.symbol.clone();
         
         // Update toxicity analyzer

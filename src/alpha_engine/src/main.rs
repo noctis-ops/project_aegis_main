@@ -1,37 +1,34 @@
 //! Project AEGIS - Layer 2
 //! Alpha Generation & Signal Logic Engine
 //!
-//! This is the main entry point for the alpha engine that implements
-//! weighted confluence scoring, microstructure analysis, and signal generation.
+//! Thin launcher: the entire engine lives in the library crate. Declaring
+//! the modules here again (as before) made cargo compile the engine twice
+//! and produced target-specific unused-import warnings.
+//!
+//! Standalone note: the engine requires its crossbeam channels to be wired
+//! before start() — `set_market_data_receiver` (from Layer 1) and
+//! `set_trade_signal_sender` (to Layer 3). Without them it exits with a
+//! clear `ChannelsNotInitialized` error instead of pretending to run.
 
-mod core;
-mod features;
-mod logic;
-mod integration;
-
+use alpha_engine::AlphaEngine;
 use tracing::{info, error};
-use tracing_subscriber;
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Initialize logging
+fn main() -> std::process::ExitCode {
+    // Initialize structured logging
     tracing_subscriber::fmt::init();
     
     info!("Starting Project AEGIS - Layer 2 Alpha Engine");
     
-    // Initialize the alpha engine
-    let mut engine = logic::AlphaEngine::new();
+    let mut engine = AlphaEngine::new();
     
-    // Start the engine
-    if let Err(e) = engine.start().await {
-        error!("Failed to start alpha engine: {}", e);
-        return Err(Box::new(e));
+    // `start()` drives the processing loop for the whole lifetime of the
+    // process; it only returns when the market data channel disconnects or
+    // a fatal error occurs, so no separate keep-alive loop is needed.
+    if let Err(e) = engine.start() {
+        error!("Alpha engine terminated with error: {}", e);
+        return std::process::ExitCode::FAILURE;
     }
     
-    info!("Project AEGIS Layer 2 started successfully");
-    
-    // Keep the application running
-    loop {
-        tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
-    }
+    info!("Project AEGIS - Layer 2 Alpha Engine shut down cleanly");
+    std::process::ExitCode::SUCCESS
 }
