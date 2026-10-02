@@ -66,9 +66,11 @@ pub fn update_obi_incremental(
         return 0.0;
     }
     
-    // Recalculate OBI based on changes
+    // Recalculate OBI based on changes.
+    // The denominator update is already reflected in `new_total_volume`
+    // (= total_volume + bid_change + ask_change), so only the numerator
+    // delta is needed here.
     let numerator_change = bid_change - ask_change;
-    let denominator_change = bid_change + ask_change;
     
     // This is a simplified approximation - in practice, you'd recalculate from scratch
     // for precision, but this gives good performance for high-frequency updates

@@ -19,6 +19,9 @@ pub enum AlphaError {
     #[error("Signal expired: {0}")]
     SignalExpired(String),
     
+    #[error("Market data receiver and trade intent sender must be wired via set_market_data_receiver/set_trade_signal_sender before start()")]
+    ChannelsNotInitialized,
+    
     #[error("Other error: {0}")]
     Other(String),
 }

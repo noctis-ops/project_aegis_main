@@ -1,37 +1,32 @@
 //! Project AEGIS - Layer 1
 //! High-Frequency Trading System for Binance Perpetual Futures
 //! 
-//! This is the main entry point for the HFT engine that implements
-//! deterministic time processing, zero-trust networking, and zero dynamic allocation.
+//! Thin launcher: the entire engine lives in the library crate, so this
+//! binary only wires up logging, starts the engine and maps the outcome
+//! to a process exit code. Declaring the modules here again (as before)
+//! made cargo compile the whole engine twice and produced target-specific
+//! dead-code/unused-import warnings.
 
-mod core;
-mod network;
-mod orderbook;
-mod engine;
-
+use binance_hft::TradingEngine;
 use tracing::{info, error};
-use tracing_subscriber;
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Initialize logging
+async fn main() -> std::process::ExitCode {
+    // Initialize structured logging
     tracing_subscriber::fmt::init();
     
     info!("Starting Project AEGIS - Layer 1 HFT Engine");
     
-    // Initialize the trading engine
-    let mut engine = engine::TradingEngine::new();
+    let mut engine = TradingEngine::new();
     
-    // Start the engine
+    // `start()` drives the event loop for the whole lifetime of the process;
+    // it only returns when a fatal error occurs, so no separate keep-alive
+    // loop is needed after it.
     if let Err(e) = engine.start().await {
-        error!("Failed to start trading engine: {}", e);
-        return Err(Box::new(e));
+        error!("Trading engine terminated with error: {}", e);
+        return std::process::ExitCode::FAILURE;
     }
     
-    info!("Project AEGIS started successfully");
-    
-    // Keep the application running
-    loop {
-        tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
-    }
+    info!("Project AEGIS - Layer 1 HFT Engine shut down cleanly");
+    std::process::ExitCode::SUCCESS
 }

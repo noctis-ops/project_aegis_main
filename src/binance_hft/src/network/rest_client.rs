@@ -5,7 +5,11 @@ use reqwest;
 use tracing::info;
 use crate::core::constants::*;
 
-/// REST client for Binance Futures API
+/// REST client for Binance Futures API.
+///
+/// Cheap to clone: wraps `reqwest::Client`, which is reference-counted
+/// internally and shares one connection pool across all clones.
+#[derive(Clone)]
 pub struct RestClient {
     client: reqwest::Client,
     base_url: String,
@@ -13,12 +17,11 @@ pub struct RestClient {
 
 impl RestClient {
     /// Create a new REST client
-    pub fn new() -> Result<Self, HftError> {
-        let client = reqwest::Client::new();
-        Ok(Self {
-            client,
+    pub fn new() -> Self {
+        Self {
+            client: reqwest::Client::new(),
             base_url: BINANCE_FUTURES_REST_URL.to_string(),
-        })
+        }
     }
     
     /// Fetch order book snapshot for a symbol

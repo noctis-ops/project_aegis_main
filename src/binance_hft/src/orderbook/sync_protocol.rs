@@ -14,15 +14,16 @@ pub struct SyncProtocol {
 }
 
 impl SyncProtocol {
-    /// Create a new synchronization protocol
-    pub fn new() -> Result<Self, HftError> {
-        let rest_client = RestClient::new()?;
-        
-        Ok(Self {
+    /// Create a new synchronization protocol.
+    ///
+    /// Takes the engine's shared `RestClient` so every symbol reuses the same
+    /// `reqwest::Client` connection pool instead of building its own.
+    pub fn new(rest_client: RestClient) -> Self {
+        Self {
             rest_client,
             buffered_updates: VecDeque::with_capacity(RING_BUFFER_SIZE),
             max_buffer_size: RING_BUFFER_SIZE,
-        })
+        }
     }
     
     /// Buffer an update while waiting for snapshot

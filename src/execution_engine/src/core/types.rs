@@ -17,14 +17,14 @@ pub struct TradeIntent {
 }
 
 /// Order side enumeration
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 pub enum OrderSide {
     Buy,
     Sell,
 }
 
 /// Order type enumeration
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 pub enum OrderType {
     Limit,
     Market,
@@ -33,7 +33,7 @@ pub enum OrderType {
 }
 
 /// Time in force enumeration
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 pub enum TimeInForce {
     GTC, // Good Til Canceled
     IOC, // Immediate or Cancel
@@ -42,7 +42,7 @@ pub enum TimeInForce {
 }
 
 /// Order status enumeration
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 pub enum OrderStatus {
     New,
     PartiallyFilled,
@@ -63,6 +63,9 @@ pub struct Order {
     pub price: f64,
     pub quantity: f64,
     pub time_in_force: TimeInForce,
+    /// Time-to-live in milliseconds; 0 = no TTL (good-til-canceled style,
+    /// used for protective stop-loss / take-profit orders).
+    pub time_to_live: u64,
     pub status: OrderStatus,
     pub filled_quantity: f64,
     pub avg_price: f64,
@@ -77,11 +80,12 @@ impl Order {
             order_id: None,
             client_order_id: Uuid::new_v4().to_string(),
             symbol: intent.symbol.clone(),
-            side: intent.side.clone(),
+            side: intent.side,
             order_type: OrderType::Limit,
             price: intent.price,
             quantity: intent.size,
             time_in_force: TimeInForce::GTX, // Post Only
+            time_to_live: intent.time_to_live,
             status: OrderStatus::New,
             filled_quantity: 0.0,
             avg_price: 0.0,
@@ -92,6 +96,11 @@ impl Order {
     
     /// Create a stop loss order
     pub fn stop_loss_order(symbol: String, side: OrderSide, stop_price: f64, quantity: f64) -> Self {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        
         Self {
             order_id: None,
             client_order_id: format!("sl_{}", Uuid::new_v4()),
@@ -101,22 +110,22 @@ impl Order {
             price: stop_price,
             quantity,
             time_in_force: TimeInForce::GTC,
+            time_to_live: 0, // Protective orders do not expire
             status: OrderStatus::New,
             filled_quantity: 0.0,
             avg_price: 0.0,
-            created_at: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_millis() as u64,
-            updated_at: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_millis() as u64,
+            created_at: now,
+            updated_at: now,
         }
     }
     
     /// Create a take profit order
     pub fn take_profit_order(symbol: String, side: OrderSide, take_profit_price: f64, quantity: f64) -> Self {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        
         Self {
             order_id: None,
             client_order_id: format!("tp_{}", Uuid::new_v4()),
@@ -126,17 +135,12 @@ impl Order {
             price: take_profit_price,
             quantity,
             time_in_force: TimeInForce::GTC,
+            time_to_live: 0, // Protective orders do not expire
             status: OrderStatus::New,
             filled_quantity: 0.0,
             avg_price: 0.0,
-            created_at: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_millis() as u64,
-            updated_at: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_millis() as u64,
+            created_at: now,
+            updated_at: now,
         }
     }
 }

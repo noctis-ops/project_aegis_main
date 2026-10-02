@@ -40,12 +40,15 @@ impl WebSocketManager {
         // Spawn a task to handle incoming messages
         let tx = self.tx.clone();
         let symbol = self.symbol.clone();
+        // Precomputed once per connection instead of allocating a new
+        // uppercase String for every single inbound message.
+        let symbol_upper = self.symbol.to_uppercase();
         
         tokio::spawn(async move {
             while let Some(msg) = read.next().await {
                 match msg {
                     Ok(Message::Text(text)) => {
-                        if let Err(e) = Self::handle_message(text, &tx, &symbol).await {
+                        if let Err(e) = Self::handle_message(text, &tx, &symbol_upper).await {
                             error!("Error handling WebSocket message: {}", e);
                         }
                     }
@@ -74,44 +77,47 @@ impl WebSocketManager {
     async fn handle_message(
         message: String,
         tx: &mpsc::UnboundedSender<MarketDataEvent>,
-        symbol: &str,
+        symbol_upper: &str,
     ) -> Result<(), HftError> {
         // Try to parse as order book update first
         if message.contains("\"e\":\"depthUpdate\"") {
-            let mut data = message.as_bytes().to_vec();
+            // `into_bytes()` moves the message buffer into simd-json with
+            // zero copying (`as_bytes().to_vec()` allocated and copied the
+            // whole payload on every single message).
+            let mut data = message.into_bytes();
             let update: OrderBookUpdate = simd_json::from_slice(&mut data)?;
             
-            if update.symbol == symbol.to_uppercase() {
+            if update.symbol == symbol_upper {
                 tx.send(MarketDataEvent::OrderBookUpdate(update))
                     .map_err(|_| HftError::Other("Failed to send order book update".to_string()))?;
             }
         }
         // Try to parse as aggregated trade
         else if message.contains("\"e\":\"aggTrade\"") {
-            let mut data = message.as_bytes().to_vec();
+            let mut data = message.into_bytes();
             let trade: AggTrade = simd_json::from_slice(&mut data)?;
             
-            if trade.symbol == symbol.to_uppercase() {
+            if trade.symbol == symbol_upper {
                 tx.send(MarketDataEvent::AggTrade(trade))
                     .map_err(|_| HftError::Other("Failed to send agg trade".to_string()))?;
             }
         }
         // Try to parse as mark price update
         else if message.contains("\"e\":\"markPriceUpdate\"") {
-            let mut data = message.as_bytes().to_vec();
+            let mut data = message.into_bytes();
             let mark_price: MarkPriceUpdate = simd_json::from_slice(&mut data)?;
             
-            if mark_price.symbol == symbol.to_uppercase() {
+            if mark_price.symbol == symbol_upper {
                 tx.send(MarketDataEvent::MarkPriceUpdate(mark_price))
                     .map_err(|_| HftError::Other("Failed to send mark price update".to_string()))?;
             }
         }
         // Try to parse as force order
         else if message.contains("\"e\":\"forceOrder\"") {
-            let mut data = message.as_bytes().to_vec();
+            let mut data = message.into_bytes();
             let force_order: ForceOrder = simd_json::from_slice(&mut data)?;
             
-            if force_order.order.symbol == symbol.to_uppercase() {
+            if force_order.order.symbol == symbol_upper {
                 tx.send(MarketDataEvent::ForceOrder(force_order))
                     .map_err(|_| HftError::Other("Failed to send force order".to_string()))?;
             }

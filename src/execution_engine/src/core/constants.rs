@@ -23,5 +23,9 @@ pub const DEFAULT_LEVERAGE: u32 = 50;
 /// Time-to-live for orders in milliseconds
 pub const ORDER_TTL_MS: u64 = 200;
 
+/// How often the order-timeout sweep runs (orders carry ~200ms TTLs, so a
+/// 100ms sweep enforces them with at most 100ms of extra latency).
+pub const ORDER_TIMEOUT_CHECK_INTERVAL_MS: u64 = 100;
+
 /// Tick size for price adjustments
 pub const DEFAULT_TICK_SIZE: f64 = 0.1;
