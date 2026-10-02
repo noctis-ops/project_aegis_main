@@ -3,7 +3,6 @@
 use crate::core::{HftError, MarketDataEvent, OrderBookUpdate};
 use crate::network::{WebSocketManager, RestClient, HeartbeatMonitor};
 use crate::orderbook::{LocalOrderBook, SyncProtocol};
-use crate::engine::EventBus;
 use tokio::sync::mpsc;
 use tracing::{info, error, warn};
 use std::collections::HashMap;
@@ -12,7 +11,6 @@ use std::collections::HashMap;
 pub struct TradingEngine {
     symbols: Vec<String>,
     order_books: HashMap<String, LocalOrderBook>,
-    event_bus: EventBus,
     sync_protocols: HashMap<String, SyncProtocol>,
     rest_client: RestClient,
     market_data_tx: mpsc::UnboundedSender<MarketDataEvent>,
@@ -24,12 +22,14 @@ impl TradingEngine {
     /// Create a new trading engine
     pub fn new() -> Self {
         let (market_data_tx, market_data_rx) = mpsc::unbounded_channel();
-        let rest_client = RestClient::new().expect("Failed to create REST client");
+        // A single shared REST client: `reqwest::Client` internally pools
+        // connections, so sharing it across all symbols reuses one pool
+        // instead of opening a new one per sync protocol.
+        let rest_client = RestClient::new();
         
         Self {
             symbols: vec!["BTCUSDT".to_string()], // Default symbol for testing
             order_books: HashMap::new(),
-            event_bus: EventBus::new(),
             sync_protocols: HashMap::new(),
             rest_client,
             market_data_tx,
@@ -45,7 +45,7 @@ impl TradingEngine {
             self.order_books.insert(symbol.clone(), LocalOrderBook::new(symbol.clone()));
             self.sync_protocols.insert(
                 symbol.clone(), 
-                SyncProtocol::new().expect("Failed to create sync protocol")
+                SyncProtocol::new(self.rest_client.clone())
             );
         }
     }
@@ -74,10 +74,10 @@ impl TradingEngine {
         // Create order book
         self.order_books.insert(symbol.to_string(), LocalOrderBook::new(symbol.to_string()));
         
-        // Create sync protocol
+        // Create sync protocol (shares the engine's REST client / connection pool)
         self.sync_protocols.insert(
             symbol.to_string(), 
-            SyncProtocol::new()?
+            SyncProtocol::new(self.rest_client.clone())
         );
         
         // Create WebSocket manager
@@ -99,18 +99,18 @@ impl TradingEngine {
         info!("Starting main event loop");
         
         loop {
-            // Process market data events
-            if let Ok(event) = self.market_data_rx.try_recv() {
-                self.process_market_data_event(event).await?;
+            // Park the task until the next market data event arrives:
+            // zero CPU while idle, immediate wake-up on message (no polling
+            // delay, no busy-wait loop).
+            match self.market_data_rx.recv().await {
+                Some(event) => self.process_market_data_event(event).await?,
+                None => {
+                    // Every sender (WebSocket managers, heartbeat monitors and
+                    // the engine itself) was dropped: no more data can arrive.
+                    warn!("All market data senders dropped, stopping event loop");
+                    return Ok(());
+                }
             }
-            
-            // Process events from the internal bus
-            if let Ok(event) = self.event_bus.receive() {
-                self.process_internal_event(event).await?;
-            }
-            
-            // Small delay to prevent busy looping
-            tokio::time::sleep(tokio::time::Duration::from_micros(10)).await;
         }
     }
     
@@ -135,12 +135,6 @@ impl TradingEngine {
         }
         
         Ok(())
-    }
-    
-    /// Process internal events from the event bus
-    async fn process_internal_event(&mut self, event: MarketDataEvent) -> Result<(), HftError> {
-        // Forward events to appropriate handlers
-        self.process_market_data_event(event).await
     }
     
     /// Handle order book updates
@@ -170,6 +164,12 @@ impl TradingEngine {
                 Err(HftError::SequenceGap { .. }) | Err(HftError::OrderBookCorruption) => {
                     // Sequence gap or corruption detected, initiate recovery
                     self.initiate_recovery(&symbol).await?;
+                }
+                Err(HftError::InvalidMessage(msg)) => {
+                    // Data-integrity guard tripped (e.g. a misrouted update
+                    // for another symbol): the book rejected it and stayed
+                    // consistent, so drop the event and keep running.
+                    warn!("Rejected invalid order book update for {}: {}", symbol, msg);
                 }
                 Err(e) => {
                     error!("Failed to apply order book update: {}", e);

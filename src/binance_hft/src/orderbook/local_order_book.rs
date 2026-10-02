@@ -68,6 +68,18 @@ impl LocalOrderBook {
     
     /// Apply an order book update to the LOB
     pub fn apply_update(&mut self, update: &OrderBookUpdate) -> Result<(), HftError> {
+        // Zero-trust routing guard: an update destined for another symbol
+        // must never touch this book (a misrouted BTCUSDT event arriving on
+        // the ETHUSDT book would silently corrupt prices). Plain byte
+        // comparison on the hot path — no allocation; the `format!` below
+        // only executes on the anomaly path.
+        if update.symbol != self.symbol {
+            return Err(HftError::InvalidMessage(format!(
+                "symbol mismatch: order book is for {}, update is for {}",
+                self.symbol, update.symbol
+            )));
+        }
+        
         // Check for sequence gap
         if self.is_synced && update.first_update_id > self.last_update_id + 1 {
             error!(
