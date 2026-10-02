@@ -3,9 +3,6 @@
 use crate::core::{ExecutionReport, AccountUpdate, PositionRisk, ExecutionError};
 use crate::components::OrderLifecycleManager;
 use dashmap::DashMap;
-use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
-use futures_util::{SinkExt, StreamExt};
-use url::Url;
 use tracing::{info, warn, error, debug};
 use std::sync::Arc;
 use crate::core::constants::*;
@@ -15,6 +12,11 @@ pub struct StateReconciliationEngine {
     order_lifecycle_manager: Arc<OrderLifecycleManager>,
     active_positions: Arc<DashMap<String, PositionRisk>>, // symbol -> PositionRisk
     user_data_stream_key: Option<String>,
+    /// Whether a real user-data-stream connection exists. The current
+    /// implementation simulates the stream, so heartbeat supervision stays
+    /// off until a real connection flips this to true — otherwise the
+    /// never-updated heartbeat would fire a false disconnect timeout.
+    stream_live: bool,
     last_heartbeat: std::time::Instant,
 }
 
@@ -25,6 +27,7 @@ impl StateReconciliationEngine {
             order_lifecycle_manager: Arc::new(OrderLifecycleManager::new()),
             active_positions: Arc::new(DashMap::new()),
             user_data_stream_key: None,
+            stream_live: false,
             last_heartbeat: std::time::Instant::now(),
         }
     }
@@ -37,6 +40,9 @@ impl StateReconciliationEngine {
         // 1. POST to /fapi/v1/listenKey to get a listen key
         // 2. Connect to wss://fstream.binance.com/ws/<listenKey>
         // 3. Periodically PUT to /fapi/v1/listenKey to keep it alive
+        // 4. Set `stream_live = true` and call update_heartbeat() on every
+        //    inbound message, which activates the supervision in
+        //    process_user_data_stream().
         
         // For now, we'll simulate having a listen key
         self.user_data_stream_key = Some("simulated_listen_key".to_string());
@@ -47,6 +53,13 @@ impl StateReconciliationEngine {
     
     /// Process user data stream messages
     pub async fn process_user_data_stream(&mut self) -> Result<(), ExecutionError> {
+        // Heartbeat supervision only applies once a real user-data stream
+        // connection exists. The current implementation simulates the
+        // stream, so there is no heartbeat to lose yet.
+        if !self.stream_live {
+            return Ok(());
+        }
+        
         // Check heartbeat
         if self.last_heartbeat.elapsed().as_millis() > USER_DATA_STREAM_TIMEOUT_MS.into() {
             error!("User data stream heartbeat timeout detected");
@@ -58,7 +71,6 @@ impl StateReconciliationEngine {
         // 2. Parse execution reports and account updates
         // 3. Update local state accordingly
         
-        // Simulate processing
         Ok(())
     }
     
@@ -116,7 +128,11 @@ impl StateReconciliationEngine {
     
     /// Handle account update from Binance
     pub fn handle_account_update(&self, update: AccountUpdate) {
-        debug!("Handling account update");
+        debug!(
+            "Handling account update: {} balance entries, {} margin entries",
+            update.account_info.balances.len(),
+            update.account_info.margin_info.len()
+        );
         
         // Update position risks
         // In a real implementation, we would parse the account info and update positions

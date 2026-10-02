@@ -31,6 +31,9 @@ pub enum ExecutionError {
     #[error("User data stream disconnected")]
     UserDataStreamDisconnected,
     
+    #[error("Trade intent receiver must be set via set_trade_intent_receiver before start()")]
+    TradeIntentReceiverNotSet,
+    
     #[error("Order timeout: {0}")]
     OrderTimeout(String),
     

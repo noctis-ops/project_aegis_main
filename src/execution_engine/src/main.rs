@@ -1,37 +1,36 @@
 //! Project AEGIS - Layer 3
 //! Order Management System & Execution Engine
 //!
-//! This is the main entry point for the execution engine that implements
-//! order lifecycle management, smart order routing, and high-frequency execution.
+//! Thin launcher: the entire engine lives in the library crate. Declaring
+//! the modules here again (as before) made cargo compile the engine twice
+//! and produced target-specific unused-import warnings.
+//!
+//! Standalone note: the engine requires its crossbeam channels to be wired
+//! before start() — `set_trade_intent_receiver` (from Layer 2) and
+//! optionally `set_execution_report_sender` (to Layer 2/4). Without them it
+//! exits with a clear `TradeIntentReceiverNotSet` error instead of
+//! pretending to run.
 
-mod core;
-mod components;
-mod integration;
-mod security;
-
+use execution_engine::ExecutionEngine;
 use tracing::{info, error};
-use tracing_subscriber;
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Initialize logging
+async fn main() -> std::process::ExitCode {
+    // Initialize structured logging
     tracing_subscriber::fmt::init();
     
     info!("Starting Project AEGIS - Layer 3 Execution Engine");
     
-    // Initialize the execution engine
-    let mut engine = components::ExecutionEngine::new();
+    let mut engine = ExecutionEngine::new();
     
-    // Start the engine
+    // `start()` drives the processing loop for the whole lifetime of the
+    // process; it only returns when a fatal error occurs, so no separate
+    // keep-alive loop is needed after it.
     if let Err(e) = engine.start().await {
-        error!("Failed to start execution engine: {}", e);
-        return Err(Box::new(e));
+        error!("Execution engine terminated with error: {}", e);
+        return std::process::ExitCode::FAILURE;
     }
     
-    info!("Project AEGIS Layer 3 started successfully");
-    
-    // Keep the application running
-    loop {
-        tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
-    }
+    info!("Project AEGIS - Layer 3 Execution Engine shut down cleanly");
+    std::process::ExitCode::SUCCESS
 }

@@ -1,6 +1,8 @@
 //! Main Execution Engine implementation
 
-use crate::core::{TradeIntent, Order, ExecutionError};
+use crate::core::{
+    TradeIntent, Order, OrderSide, OrderType, TimeInForce, ExecutionReport, ExecutionError,
+};
 use crate::components::{
     SmartOrderRouter, 
     OrderLifecycleManager, 
@@ -9,7 +11,7 @@ use crate::components::{
 };
 use crossbeam::channel::{Receiver, Sender};
 use tracing::{info, warn, error, debug};
-use std::collections::HashMap;
+use crate::core::constants::*;
 
 /// Main Execution Engine
 pub struct ExecutionEngine {
@@ -19,7 +21,7 @@ pub struct ExecutionEngine {
     state_reconciliation_engine: StateReconciliationEngine,
     margin_leverage_guard: MarginLeverageGuard,
     trade_intent_rx: Option<Receiver<TradeIntent>>,
-    execution_report_tx: Option<Sender<crate::core::ExecutionReport>>,
+    execution_report_tx: Option<Sender<ExecutionReport>>,
 }
 
 impl ExecutionEngine {
@@ -43,17 +45,21 @@ impl ExecutionEngine {
         }
     }
     
-    /// Set trade intent receiver channel
+    /// Set trade intent receiver channel (integration seam with Layer 2)
     pub fn set_trade_intent_receiver(&mut self, rx: Receiver<TradeIntent>) {
         self.trade_intent_rx = Some(rx);
     }
     
-    /// Set execution report sender channel
-    pub fn set_execution_report_sender(&mut self, tx: Sender<crate::core::ExecutionReport>) {
+    /// Set execution report sender channel (integration seam with Layer 2/4)
+    pub fn set_execution_report_sender(&mut self, tx: Sender<ExecutionReport>) {
         self.execution_report_tx = Some(tx);
     }
     
-    /// Start the execution engine
+    /// Start the execution engine.
+    ///
+    /// Drives the processing loop for the whole lifetime of the process; it
+    /// only returns when a fatal error occurs (e.g. a cancel that cannot be
+    /// delivered — an intentional fail-stop for an order-management system).
     pub async fn start(&mut self) -> Result<(), ExecutionError> {
         info!("Initializing Execution Engine for symbols: {:?}", self.symbols);
         
@@ -84,27 +90,54 @@ impl ExecutionEngine {
     async fn run_processing_loop(&mut self) -> Result<(), ExecutionError> {
         info!("Starting main processing loop");
         
-        // We need channels for communication
         if self.trade_intent_rx.is_none() {
-            return Err(ExecutionError::Other("Trade intent receiver must be set".to_string()));
+            return Err(ExecutionError::TradeIntentReceiverNotSet);
         }
+        // Take ownership of the channel: this loop is its terminal consumer
+        // (a single consumer per crossbeam queue, as designed).
+        let trade_intent_rx = self.trade_intent_rx.take().unwrap();
         
-        let trade_intent_rx = self.trade_intent_rx.as_ref().unwrap();
+        // Bridge the synchronous crossbeam channel into the async runtime:
+        // a dedicated blocking thread parks on recv() (zero CPU while idle,
+        // immediate wake-up) and forwards intents into a tokio channel that
+        // the select! below can await. This replaces the old 100k/sec
+        // try_recv busy-poll.
+        let (intent_tx, mut intent_rx) = tokio::sync::mpsc::unbounded_channel();
+        tokio::task::spawn_blocking(move || {
+            for intent in trade_intent_rx {
+                if intent_tx.send(intent).is_err() {
+                    break; // Engine dropped its side: stop bridging.
+                }
+            }
+        });
+        
+        let mut timeout_ticker = tokio::time::interval(std::time::Duration::from_millis(
+            ORDER_TIMEOUT_CHECK_INTERVAL_MS,
+        ));
+        // Track whether the intent stream is still connected. Once Layer 2
+        // disconnects we keep running to manage open orders (timeout
+        // sweeps, cancels) but stop selecting on the closed channel.
+        let mut intents_connected = true;
         
         loop {
-            // Process trade intents from Layer 2
-            if let Ok(intent) = trade_intent_rx.try_recv() {
-                self.process_trade_intent(intent).await?;
+            tokio::select! {
+                intent = intent_rx.recv(), if intents_connected => {
+                    match intent {
+                        Some(intent) => self.process_trade_intent(intent).await?,
+                        None => {
+                            warn!("Trade intent channel disconnected; continuing to manage open orders");
+                            intents_connected = false;
+                        }
+                    }
+                }
+                _ = timeout_ticker.tick() => {
+                    // Process execution reports from Binance
+                    self.state_reconciliation_engine.process_user_data_stream().await?;
+                    
+                    // Check for order timeouts
+                    self.check_order_timeouts().await?;
+                }
             }
-            
-            // Process execution reports from Binance
-            self.state_reconciliation_engine.process_user_data_stream().await?;
-            
-            // Check for order timeouts
-            self.check_order_timeouts().await?;
-            
-            // Small delay to prevent busy looping
-            tokio::time::sleep(tokio::time::Duration::from_micros(10)).await;
         }
     }
     
@@ -124,12 +157,26 @@ impl ExecutionEngine {
             return Ok(());
         }
         
-        // Route the order
+        // Route the order. The router only reads the order, so it borrows it
+        // and the same Order instance is tracked afterwards — no clone on
+        // the hot path.
         let order = Order::from_trade_intent(&intent);
-        self.smart_order_router.route_order(order).await?;
-        
-        // Track order lifecycle
-        self.order_lifecycle_manager.track_order(order);
+        match self.smart_order_router.route_order(&order).await {
+            Ok(()) => {
+                // Track order lifecycle
+                self.order_lifecycle_manager.track_order(order);
+            }
+            Err(ExecutionError::OrderRejected(reason)) | Err(ExecutionError::InsufficientMargin(reason)) => {
+                // Routine market-condition outcomes for post-only entries
+                // (GTX entries are rejected whenever they would cross the
+                // book). The order never reached the exchange, so it is not
+                // tracked and the engine keeps running.
+                warn!("Order {} not routed: {}", order.client_order_id, reason);
+            }
+            Err(e) => {
+                return Err(e);
+            }
+        }
         
         Ok(())
     }
@@ -141,16 +188,66 @@ impl ExecutionEngine {
         for order in timed_out_orders {
             warn!("Order timed out: {}", order.client_order_id);
             
-            // Cancel timed out order
+            // Cancel timed out order. Failures propagate on purpose
+            // (fail-stop): an execution engine that cannot manage its open
+            // orders must not keep trading blind.
             self.smart_order_router.cancel_order(
                 order.symbol.clone(), 
                 order.client_order_id.clone()
             ).await?;
             
-            // Notify about timeout
+            // Stop tracking the order. Without this it would remain
+            // "active" and be re-canceled on every timeout sweep forever.
+            self.order_lifecycle_manager.mark_order_canceled(&order.client_order_id);
+            
+            // Publish a synthetic execution report so downstream layers
+            // (risk management / telemetry) learn about the timeout.
             if let Some(tx) = &self.execution_report_tx {
-                // In a real implementation, we would send a synthetic execution report
-                // for the cancellation
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as u64;
+                
+                let report = ExecutionReport {
+                    event_type: "executionReport".to_string(),
+                    event_time: now,
+                    symbol: order.symbol.clone(),
+                    client_order_id: order.client_order_id.clone(),
+                    side: match order.side {
+                        OrderSide::Buy => "BUY".to_string(),
+                        OrderSide::Sell => "SELL".to_string(),
+                    },
+                    order_type: match order.order_type {
+                        OrderType::Limit => "LIMIT".to_string(),
+                        OrderType::Market => "MARKET".to_string(),
+                        OrderType::StopMarket => "STOP_MARKET".to_string(),
+                        OrderType::TakeProfitMarket => "TAKE_PROFIT_MARKET".to_string(),
+                    },
+                    time_in_force: match order.time_in_force {
+                        TimeInForce::GTC => "GTC".to_string(),
+                        TimeInForce::IOC => "IOC".to_string(),
+                        TimeInForce::FOK => "FOK".to_string(),
+                        TimeInForce::GTX => "GTX".to_string(),
+                    },
+                    original_quantity: order.quantity.to_string(),
+                    original_price: order.price.to_string(),
+                    average_price: order.avg_price.to_string(),
+                    stop_price: "0".to_string(),
+                    execution_type: "CANCELED".to_string(),
+                    order_status: "EXPIRED".to_string(),
+                    order_id: 0, // Synthetic report: no exchange order ID
+                    last_executed_quantity: "0".to_string(),
+                    cumulative_filled_quantity: order.filled_quantity.to_string(),
+                    last_executed_price: "0".to_string(),
+                    commission: "0".to_string(),
+                    commission_asset: "USDT".to_string(),
+                    transaction_time: now,
+                    trade_id: 0,
+                };
+                
+                if let Err(e) = tx.send(report) {
+                    debug!("Execution report channel closed: {}", e);
+                }
             }
         }
         

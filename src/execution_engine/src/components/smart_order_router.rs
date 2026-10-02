@@ -39,8 +39,11 @@ impl SmartOrderRouter {
         Ok(())
     }
     
-    /// Route an order based on its type and market conditions
-    pub async fn route_order(&mut self, order: Order) -> Result<(), ExecutionError> {
+    /// Route an order based on its type and market conditions.
+    ///
+    /// Borrows the order: routing only reads its fields, and the caller
+    /// keeps ownership for lifecycle tracking — no clone on the hot path.
+    pub async fn route_order(&mut self, order: &Order) -> Result<(), ExecutionError> {
         debug!("Routing order: {:?}", order);
         
         match order.order_type {
@@ -64,7 +67,7 @@ impl SmartOrderRouter {
     }
     
     /// Send a limit order
-    async fn send_limit_order(&mut self, order: Order) -> Result<(), ExecutionError> {
+    async fn send_limit_order(&mut self, order: &Order) -> Result<(), ExecutionError> {
         info!("Sending limit order for symbol: {}", order.symbol);
         
         // Build query parameters
@@ -129,7 +132,7 @@ impl SmartOrderRouter {
     }
     
     /// Send a market order (emergency exit)
-    async fn send_market_order(&mut self, order: Order) -> Result<(), ExecutionError> {
+    async fn send_market_order(&mut self, order: &Order) -> Result<(), ExecutionError> {
         info!("Sending market order for symbol: {}", order.symbol);
         
         // For emergency exits, we might want to use IOC with slightly worse price
@@ -183,7 +186,7 @@ impl SmartOrderRouter {
     }
     
     /// Send a stop market order
-    async fn send_stop_market_order(&mut self, order: Order) -> Result<(), ExecutionError> {
+    async fn send_stop_market_order(&mut self, order: &Order) -> Result<(), ExecutionError> {
         info!("Sending stop market order for symbol: {}", order.symbol);
         
         let mut params = vec![
@@ -235,7 +238,7 @@ impl SmartOrderRouter {
     }
     
     /// Send a take profit order
-    async fn send_take_profit_order(&mut self, order: Order) -> Result<(), ExecutionError> {
+    async fn send_take_profit_order(&mut self, order: &Order) -> Result<(), ExecutionError> {
         info!("Sending take profit order for symbol: {}", order.symbol);
         
         let mut params = vec![
@@ -345,8 +348,12 @@ impl SmartOrderRouter {
         }
     }
     
-    /// Build query string from parameters
-    fn build_query_string(&self, params: &[(String, String)]) -> String {
+    /// Build query string from parameters.
+    ///
+    /// Parameter keys are `&'static str` literals at every call site, so the
+    /// signature takes `(&str, String)` pairs — one canonical form instead
+    /// of five mismatched conversions.
+    fn build_query_string(&self, params: &[(&str, String)]) -> String {
         params.iter()
             .map(|(k, v)| format!("{}={}", k, v))
             .collect::<Vec<_>>()

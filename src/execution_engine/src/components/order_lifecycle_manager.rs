@@ -119,7 +119,9 @@ impl OrderLifecycleManager {
         
         for entry in self.active_orders.iter() {
             let order = entry.value();
-            if current_time > (order.created_at + order.time_to_live) {
+            // time_to_live == 0 means no TTL (protective GTC-style orders);
+            // only enforce expiry for orders that actually carry one.
+            if order.time_to_live > 0 && current_time > (order.created_at + order.time_to_live) {
                 timed_out_orders.push(order.clone());
             }
         }
