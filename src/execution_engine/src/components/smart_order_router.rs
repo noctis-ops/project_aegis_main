@@ -2,6 +2,7 @@
 
 use crate::core::{Order, OrderType, TimeInForce, ExecutionError, RateLimitInfo};
 use crate::security::BinanceSignature;
+use crate::integration::ErrorHandler;
 use reqwest;
 use tracing::{info, warn, error, debug};
 use crate::core::constants::*;
@@ -115,19 +116,18 @@ impl SmartOrderRouter {
         if response.status().is_success() {
             let response_text = response.text().await?;
             debug!("Order response: {}", response_text);
-            Ok(())
-        } else {
-            let error_text = response.text().await?;
-            error!("Order failed: {}", error_text);
             
-            // Parse error and handle specific cases
-            if error_text.contains("Margin is insufficient") {
-                return Err(ExecutionError::InsufficientMargin(error_text));
-            } else if error_text.contains("Post-Only orders will be rejected") {
-                return Err(ExecutionError::OrderRejected(error_text));
+            // A GTX entry that would cross the book is answered with HTTP 200 and an
+            // EXPIRED/REJECTED status, so the status line alone never proves the order
+            // reached the exchange — without this check the lifecycle manager would
+            // track an order that does not exist on the book.
+            if let Some(err) = Self::engine_rejection(response_text.as_str(), true) {
+                return Err(err);
             }
             
-            Err(ExecutionError::NetworkError(reqwest::Error::from(response.error_for_status().unwrap_err())))
+            Ok(())
+        } else {
+            Err(Self::classify_rejection(response, "Limit order").await)
         }
     }
     
@@ -177,11 +177,16 @@ impl SmartOrderRouter {
         if response.status().is_success() {
             let response_text = response.text().await?;
             debug!("Market order response: {}", response_text);
+            
+            // Exits are never routine: a rejected market order means the position is
+            // still open and unprotected, so it must not be swallowed.
+            if let Some(err) = Self::engine_rejection(response_text.as_str(), false) {
+                return Err(err);
+            }
+            
             Ok(())
         } else {
-            let error_text = response.text().await?;
-            error!("Market order failed: {}", error_text);
-            Err(ExecutionError::NetworkError(reqwest::Error::from(response.error_for_status().unwrap_err())))
+            Err(Self::classify_rejection(response, "Market order").await)
         }
     }
     
@@ -229,11 +234,14 @@ impl SmartOrderRouter {
         if response.status().is_success() {
             let response_text = response.text().await?;
             debug!("Stop market order response: {}", response_text);
+            
+            if let Some(err) = Self::engine_rejection(response_text.as_str(), false) {
+                return Err(err);
+            }
+            
             Ok(())
         } else {
-            let error_text = response.text().await?;
-            error!("Stop market order failed: {}", error_text);
-            Err(ExecutionError::NetworkError(reqwest::Error::from(response.error_for_status().unwrap_err())))
+            Err(Self::classify_rejection(response, "Stop market order").await)
         }
     }
     
@@ -281,11 +289,14 @@ impl SmartOrderRouter {
         if response.status().is_success() {
             let response_text = response.text().await?;
             debug!("Take profit order response: {}", response_text);
+            
+            if let Some(err) = Self::engine_rejection(response_text.as_str(), true) {
+                return Err(err);
+            }
+            
             Ok(())
         } else {
-            let error_text = response.text().await?;
-            error!("Take profit order failed: {}", error_text);
-            Err(ExecutionError::NetworkError(reqwest::Error::from(response.error_for_status().unwrap_err())))
+            Err(Self::classify_rejection(response, "Take profit order").await)
         }
     }
     
@@ -325,12 +336,129 @@ impl SmartOrderRouter {
         
         if response.status().is_success() {
             let response_text = response.text().await?;
+            // No matching-engine check here: on a cancel the `status` field carries
+            // the order's terminal state (CANCELED), not an acceptance verdict.
             debug!("Cancel order response: {}", response_text);
             Ok(())
         } else {
-            let error_text = response.text().await?;
-            error!("Cancel order failed: {}", error_text);
-            Err(ExecutionError::NetworkError(reqwest::Error::from(response.error_for_status().unwrap_err())))
+            Err(Self::classify_rejection(response, "Cancel order").await)
+        }
+    }
+    
+    /// Classify a non-2xx order response into a typed `ExecutionError`.
+    ///
+    /// `reqwest::Response::text()` takes `self` by value, so the status line and the
+    /// `Retry-After` header must be read *before* the body is drained — that ordering
+    /// is the actual defect behind the moved-value errors, not something to paper
+    /// over at each call site. Keeping it in one routine is also what makes every
+    /// routed order type (limit, market, stop, take profit, cancel) report failures
+    /// through one taxonomy, which is what Layer 4's circuit breakers and the
+    /// reconciliation engine key off.
+    async fn classify_rejection(
+        response: reqwest::Response,
+        order_kind: &'static str,
+    ) -> ExecutionError {
+        let status_code = response.status().as_u16();
+        let retry_after_secs = response
+            .headers()
+            .get("Retry-After")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(RATE_LIMIT_DEFAULT_BACKOFF_SECS);
+
+        let body = match response.text().await {
+            Ok(body) => body,
+            // The body never arrived: a transport failure, not an exchange verdict.
+            // The order may still be live, so it must be reconciled with the
+            // exchange rather than assumed rejected.
+            Err(err) => {
+                error!(
+                    "{}: unreadable error body (HTTP {}): {}",
+                    order_kind, status_code, err
+                );
+                return ExecutionError::NetworkError(err);
+            }
+        };
+
+        // 429 = weight/IP rate limit, 418 = temporary ban. Echo the ban window so
+        // the local weight accounting and the caller's back-off decision agree.
+        if status_code == 429 || status_code == 418 {
+            warn!(
+                "{} is rate limited (HTTP {}), backing off for {}s",
+                order_kind, status_code, retry_after_secs
+            );
+            return ExecutionError::RateLimitExceeded(format!(
+                "HTTP {} (retry after {}s): {}",
+                status_code, retry_after_secs, body
+            ));
+        }
+
+        // Preferred path: Binance's structured {"code": -2019, "msg": "..."} payload,
+        // mapped by the crate's canonical classifier (integration::ErrorHandler) so
+        // the exchange error table lives in a single component for every caller.
+        if let Ok(payload) = serde_json::from_str::<serde_json::Value>(body.as_str()) {
+            if let Some(code) = payload.get("code").and_then(serde_json::Value::as_i64) {
+                let msg = payload
+                    .get("msg")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or(body.as_str());
+                return ErrorHandler::handle_binance_error(code as i32, msg);
+            }
+        }
+
+        // Fallback for answers without a numeric code (proxies, HTML error pages):
+        // match the message text, then degrade to the status code.
+        error!("{} failed (HTTP {}): {}", order_kind, status_code, body);
+
+        if body.contains("Margin is insufficient") {
+            ExecutionError::InsufficientMargin(body)
+        } else if body.contains("Post-Only") || body.contains("Post Only") {
+            ExecutionError::OrderRejected(body)
+        } else {
+            ExecutionError::Other(format!("HTTP {}: {}", status_code, body))
+        }
+    }
+    
+    /// Detect a matching-engine rejection carried inside a 2xx order reply.
+    ///
+    /// Binance answers a rejected GTX entry with HTTP 200 and a `status` of
+    /// `EXPIRED`/`REJECTED`, so a 2xx alone never proves the order reached the book.
+    ///
+    /// `routine` marks the paths where a rejection is normal market behaviour
+    /// (post-only entries that would cross, take profits already beyond the market):
+    /// those map to `OrderRejected`, which the engine absorbs and keeps trading on.
+    /// Protective paths (market exits, stop losses) pass `false` so the failure
+    /// surfaces — a position left unprotected must never look like a routine miss.
+    fn engine_rejection(body: &str, routine: bool) -> Option<ExecutionError> {
+        let payload = match serde_json::from_str::<serde_json::Value>(body) {
+            Ok(payload) => payload,
+            // An unparseable answer tells us nothing; the user data stream stays the
+            // authority on real order state, so trust the 2xx here.
+            Err(_) => return None,
+        };
+        
+        let status = match payload.get("status").and_then(serde_json::Value::as_str) {
+            Some(status) => status,
+            None => return None,
+        };
+        
+        let rejected = status == "REJECTED" || (routine && status == "EXPIRED");
+        if !rejected {
+            return None;
+        }
+        
+        if routine {
+            warn!("Order rejected by matching engine ({}): {}", status, body);
+            Some(ExecutionError::OrderRejected(body.to_string()))
+        } else {
+            error!(
+                "Protective order rejected by matching engine ({}): {}",
+                status, body
+            );
+            Some(ExecutionError::Other(format!(
+                "order rejected by matching engine ({}): {}",
+                status, body
+            )))
         }
     }
     

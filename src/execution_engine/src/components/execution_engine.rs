@@ -191,10 +191,23 @@ impl ExecutionEngine {
             // Cancel timed out order. Failures propagate on purpose
             // (fail-stop): an execution engine that cannot manage its open
             // orders must not keep trading blind.
-            self.smart_order_router.cancel_order(
+            //
+            // One case is exempt: Binance -2011 "Unknown order sent" means the
+            // order already reached a terminal state on the exchange (filled,
+            // expired or canceled), which is exactly what this sweep wants. The
+            // real state arrives on the user data stream, so the remaining
+            // timed-out orders keep being swept instead of aborting the engine.
+            if let Err(err) = self.smart_order_router.cancel_order(
                 order.symbol.clone(), 
                 order.client_order_id.clone()
-            ).await?;
+            ).await {
+                match err {
+                    ExecutionError::OrderNotFound(reason) => {
+                        warn!("Cancel of {} was a no-op: {}", order.client_order_id, reason);
+                    }
+                    other => return Err(other),
+                }
+            }
             
             // Stop tracking the order. Without this it would remain
             // "active" and be re-canceled on every timeout sweep forever.

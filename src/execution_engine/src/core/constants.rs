@@ -16,6 +16,11 @@ pub const USER_DATA_STREAM_TIMEOUT_MS: u64 = 3000;
 pub const MAX_REQUESTS_PER_SECOND: u64 = 10;
 pub const MAX_WEIGHT_PER_MINUTE: u64 = 2400;
 
+/// Back-off assumed when a 429/418 answer carries no `Retry-After` header.
+/// Binance normally sends the window; this is only the conservative default used
+/// to tell the caller how long to stay away from the order endpoints.
+pub const RATE_LIMIT_DEFAULT_BACKOFF_SECS: u64 = 30;
+
 /// Order constraints
 pub const MIN_NOTIONAL: f64 = 5.0; // USDT
 pub const DEFAULT_LEVERAGE: u32 = 50;

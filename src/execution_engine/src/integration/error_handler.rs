@@ -30,6 +30,15 @@ impl ErrorHandler {
                 error!("Invalid order parameters: {}", error_msg);
                 ExecutionError::InvalidOrderParameters(error_msg.to_string())
             }
+            -2011 => {
+                // "Unknown order sent": the order is already terminal (filled,
+                // expired or canceled). Callers treat this as a completed intent —
+                // the timeout sweep wanted the order off the book, and the
+                // reconciliation engine learns its final state from the user data
+                // stream — so it must not be reported as an execution failure.
+                warn!("Unknown order sent: {}", error_msg);
+                ExecutionError::OrderNotFound(error_msg.to_string())
+            }
             _ => {
                 // Unknown error
                 error!("Unknown Binance error {}: {}", error_code, error_msg);
