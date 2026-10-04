@@ -14,7 +14,6 @@ use std::time::{Instant, Duration};
 pub struct RecoveryProtocol {
     state: Arc<RwLock<RecoveryState>>,
     cooldown_start: Arc<RwLock<Option<Instant>>>,
-    successful_trades_during_recovery: Arc<RwLock<usize>>,
     health_checker: HealthChecker,
     recalibrator: Recalibrator,
 }
@@ -25,7 +24,6 @@ impl RecoveryProtocol {
         Self {
             state: Arc::new(RwLock::new(RecoveryState::Normal)),
             cooldown_start: Arc::new(RwLock::new(None)),
-            successful_trades_during_recovery: Arc::new(RwLock::new(0)),
             health_checker: HealthChecker::new(),
             recalibrator: Recalibrator::new(),
         }

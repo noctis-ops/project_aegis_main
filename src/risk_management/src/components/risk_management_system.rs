@@ -29,10 +29,16 @@ impl RiskManagementSystem {
     pub fn new() -> Self {
         let config = RiskConfig::default();
         
+        // Built from the same configuration the risk manager consumes below, and
+        // before `config` moves into it (struct-literal fields are evaluated in
+        // declaration order): the drawdown breakers have to honour the configured
+        // limits, not the constants they used to hard-code.
+        let circuit_breaker_system = CircuitBreakerSystem::with_config(&config);
+        
         Self {
             config: config.clone(),
             global_risk_manager: GlobalRiskManager::new(config),
-            circuit_breaker_system: CircuitBreakerSystem::new(),
+            circuit_breaker_system,
             market_regime_guard: MarketRegimeGuard::new(),
             performance_analyzer: PerformanceAnalyzer::new(),
             portfolio_state: Arc::new(DashMap::new()),
@@ -161,6 +167,15 @@ impl RiskManagementSystem {
         // copy the analyzer no longer keeps (it only counts trades).
         self.performance_analyzer.update_with_trade(&record);
         self.trade_records.insert(trade_id, record);
+    }
+    
+    /// The configuration this system enforces.
+    ///
+    /// Exposed for the dashboard and the Telegram C2: an operator adjusting risk has
+    /// to be able to read the limits currently in force, otherwise the numbers on
+    /// the panel and the numbers tripping the breakers can drift apart unnoticed.
+    pub fn config(&self) -> &RiskConfig {
+        &self.config
     }
     
     /// Get current risk percentage
