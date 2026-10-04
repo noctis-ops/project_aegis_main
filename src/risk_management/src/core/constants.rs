@@ -17,6 +17,14 @@ pub const RECOVERY_RISK_PERCENTAGE: f64 = 0.0025; // 0.25% during cautious recov
 pub const TELEMETRY_SAMPLING_INTERVAL_MS: u64 = 100; // Sample every 100ms
 pub const METRICS_PUSH_INTERVAL_MS: u64 = 1000; // Push metrics every second
 
+/// Bounded history windows (samples kept per rolling detector).
+/// See `core::history::trim_to_last` - these buffers are appended to on every
+/// tick, so an unbounded one is a slow memory leak in a 24/7 risk engine.
+pub const LATENCY_HISTORY_MAX: usize = 100;
+pub const REJECTION_RATE_HISTORY_MAX: usize = 100;
+pub const FUNDING_RATE_HISTORY_MAX: usize = 100;
+pub const VOLATILITY_HISTORY_MAX: usize = 1000;
+
 /// Funding rate thresholds
 pub const MAX_NEGATIVE_FUNDING_RATE: f64 = -0.0005; // -0.05%
 pub const FUNDING_COST_MULTIPLIER: f64 = 3.0; // 3x multiplier for alpha to cover funding

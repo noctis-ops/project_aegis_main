@@ -2,13 +2,19 @@
 
 use crate::core::{TradeRecord, PerformanceMetrics};
 use dashmap::DashMap;
-use tracing::{info, debug};
+use tracing::debug;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Performance Analyzer
+///
+/// Stateless with respect to the trade book: metrics are computed from the
+/// system-owned map handed to `calculate_metrics`, while the analyzer itself only
+/// carries a fill counter and the timestamp of its last scan. Both are `Arc`s so a
+/// clone handed to a monitoring task keeps observing the same numbers.
 #[derive(Clone)]
 pub struct PerformanceAnalyzer {
-    trade_records: Arc<DashMap<String, TradeRecord>>,
+    trade_count: Arc<AtomicUsize>,
     last_analysis_time: Arc<std::sync::RwLock<std::time::Instant>>,
 }
 
@@ -16,18 +22,34 @@ impl PerformanceAnalyzer {
     /// Create a new Performance Analyzer
     pub fn new() -> Self {
         Self {
-            trade_records: Arc::new(DashMap::new()),
+            trade_count: Arc::new(AtomicUsize::new(0)),
             last_analysis_time: Arc::new(std::sync::RwLock::new(std::time::Instant::now())),
         }
     }
     
     /// Update with a new trade record
     pub fn update_with_trade(&self, record: &TradeRecord) {
-        self.trade_records.insert(format!("{}_{}", record.symbol, record.entry_time), record.clone());
+        // The system-owned DashMap is the book of record (and the source
+        // `calculate_metrics` is fed); the analyzer only needs to know how many
+        // trades it has seen, so it counts instead of storing a second, never
+        // trimmed copy of every record for the life of the process.
+        self.trade_count.fetch_add(1, Ordering::Relaxed);
+        debug!("Performance analyzer recorded trade {} ({} @ {})",
+               record.symbol, record.net_pnl, record.entry_time);
     }
     
     /// Calculate performance metrics
     pub fn calculate_metrics(&self, trade_records: &DashMap<String, TradeRecord>) -> PerformanceMetrics {
+        // Stamp the scan so its cost and staleness are observable: this pass clones
+        // every record and runs four reductions over it.
+        let started = std::time::Instant::now();
+        {
+            let mut last_analysis = self.last_analysis_time
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            *last_analysis = started;
+        }
+        
         let records: Vec<TradeRecord> = trade_records.iter().map(|entry| entry.value().clone()).collect();
         
         if records.is_empty() {
@@ -81,8 +103,8 @@ impl PerformanceAnalyzer {
         // Calculate Sharpe ratio (simplified)
         let sharpe_ratio = self.calculate_sharpe_ratio(&records);
         
-        debug!("Performance metrics calculated: Win Rate={:.2}%, Profit Factor={:.2}, Rolling NEV={:.4}", 
-               win_rate * 100.0, profit_factor, rolling_net_ev);
+        debug!("Performance metrics calculated in {:?}: Win Rate={:.2}%, Profit Factor={:.2}, Rolling NEV={:.4}", 
+               started.elapsed(), win_rate * 100.0, profit_factor, rolling_net_ev);
         
         PerformanceMetrics {
             win_rate,
@@ -164,6 +186,6 @@ impl PerformanceAnalyzer {
     
     /// Get trade records count
     pub fn get_trade_count(&self) -> usize {
-        self.trade_records.len()
+        self.trade_count.load(Ordering::Relaxed)
     }
 }

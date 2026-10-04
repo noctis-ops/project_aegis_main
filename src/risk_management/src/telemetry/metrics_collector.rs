@@ -1,6 +1,6 @@
 //! Metrics collector for Prometheus integration
 
-use tracing::{info, debug};
+use tracing::debug;
 use std::sync::{Arc, RwLock};
 use std::collections::HashMap;
 
@@ -70,16 +70,16 @@ impl MetricsCollector {
         Ok(())
     }
     
-    /// Collect system metrics
+    /// Collect system metrics (CPU, memory, active connections).
+    ///
+    /// Deliberately a no-op until a real sampler exists. The previous version
+    /// "measured" all three gauges through a local placeholder `rand::random::<f64>()`
+    /// that returned `T::default()`, so every panel wired to them showed an idle
+    /// machine next to a live position. Missing gauges beat fabricated ones in a
+    /// risk dashboard: implement a /proc (Linux) or job-object (Windows) sampler
+    /// here when this collector is attached to the monitoring loop.
     pub fn collect_system_metrics(&self) {
-        // Collect CPU usage (simulated)
-        self.set_metric("cpu_usage_percent", rand::random::<f64>() * 100.0);
-        
-        // Collect memory usage (simulated)
-        self.set_metric("memory_usage_mb", rand::random::<f64>() * 1000.0);
-        
-        // Collect active connections (simulated)
-        self.set_metric("active_connections", rand::random::<f64>() * 100.0);
+        debug!("SYSTEM_METRICS: no host sampler implemented; leaving cpu/memory/connection gauges unset");
     }
     
     /// Collect trading metrics
@@ -92,12 +92,5 @@ impl MetricsCollector {
     pub fn collect_performance_metrics(&self, win_rate: f64, slippage: f64) {
         self.set_metric("win_rate_percent", win_rate * 100.0);
         self.set_metric("average_slippage_basis_points", slippage * 10000.0);
-    }
-}
-
-// Dummy rand implementation for simulation
-mod rand {
-    pub fn random<T: Default>() -> T {
-        T::default()
     }
 }

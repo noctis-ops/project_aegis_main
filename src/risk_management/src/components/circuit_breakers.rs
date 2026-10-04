@@ -1,6 +1,6 @@
 //! Hierarchical Circuit Breakers implementation
 
-use crate::core::{PortfolioState, PerformanceMetrics, CircuitBreakerStatus};
+use crate::core::{PortfolioState, PerformanceMetrics, CircuitBreakerStatus, trim_to_last};
 use tracing::{info, warn, error};
 use std::sync::{Arc, RwLock};
 
@@ -71,13 +71,13 @@ impl CircuitBreakerSystem {
     pub fn check_latency_alert(&self, latency_ms: f64) -> bool {
         // Add to latency history
         {
-            let mut history = self.latency_history.write().unwrap();
+            let mut history = self.latency_history.write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             history.push(latency_ms);
             
-            // Keep only last 100 measurements
-            if history.len() > 100 {
-                history.drain(..history.len()-100);
-            }
+            // Bounded window: this is fed on every latency sample for the lifetime
+            // of the process, so the cap is what keeps it from growing forever.
+            trim_to_last(&mut *history, crate::core::constants::LATENCY_HISTORY_MAX);
         }
         
         // Check if current latency exceeds threshold
@@ -88,13 +88,11 @@ impl CircuitBreakerSystem {
     pub fn check_rejection_rate_alert(&self, rejection_rate: f64) -> bool {
         // Add to rejection rate history
         {
-            let mut history = self.rejection_rate_history.write().unwrap();
+            let mut history = self.rejection_rate_history.write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             history.push(rejection_rate);
             
-            // Keep only last 100 measurements
-            if history.len() > 100 {
-                history.drain(..history.len()-100);
-            }
+            trim_to_last(&mut *history, crate::core::constants::REJECTION_RATE_HISTORY_MAX);
         }
         
         // Check if current rejection rate exceeds threshold

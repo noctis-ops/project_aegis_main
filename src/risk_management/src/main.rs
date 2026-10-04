@@ -1,36 +1,36 @@
 //! Project AEGIS - Layer 4
 //! Telemetry, Risk Management & Circuit Breakers
 //!
-//! This is the main entry point for the risk management system that implements
-//! anti-martingale risk management, hierarchical circuit breakers, and telemetry.
+//! Thin launcher: the entire system lives in the library crate, so this binary only
+//! wires up logging, starts the system and maps the outcome to a process exit code.
+//! Declaring the modules here again (as before) made cargo compile the whole layer
+//! twice and produced target-specific dead-code/unused-import warnings - the same
+//! shape Layers 1 to 3 already use.
+//!
+//! Standalone note: `start()` spawns the monitoring tasks and returns; the loop
+//! below parks the main task so the process (and its logging threads) stays alive.
 
-mod core;
-mod components;
-mod telemetry;
-mod protocols;
-
+use risk_management::RiskManagementSystem;
 use tracing::{info, error};
-use tracing_subscriber;
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Initialize logging
+async fn main() -> std::process::ExitCode {
+    // Initialize structured logging
     tracing_subscriber::fmt::init();
     
     info!("Starting Project AEGIS - Layer 4 Risk Management System");
     
-    // Initialize the risk management system
-    let mut risk_manager = components::RiskManagementSystem::new();
+    // Initialize and start the risk management system
+    let mut risk_manager = RiskManagementSystem::new();
     
-    // Start the system
     if let Err(e) = risk_manager.start().await {
-        error!("Failed to start risk management system: {}", e);
-        return Err(Box::new(e));
+        error!("Risk management system failed to start: {}", e);
+        return std::process::ExitCode::FAILURE;
     }
     
     info!("Project AEGIS Layer 4 started successfully");
     
-    // Keep the application running
+    // Keep the application running; the monitoring tasks own the work.
     loop {
         tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
     }

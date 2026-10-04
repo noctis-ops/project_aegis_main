@@ -1,4 +1,16 @@
 //! Asynchronous logging system
+//!
+//! Like every other AEGIS layer, Layer 4 emits through the process-wide `tracing`
+//! subscriber installed by the launcher. When an operator wants the risk trail in a
+//! dedicated non-blocking file, the writer is built with
+//! `tracing_appender::non_blocking`, the resulting `NonBlocking` is installed as a
+//! `fmt` layer, and the `WorkerGuard` returned next to it is handed to
+//! [`AsyncLogger::with_guard`].
+//!
+//! The guard is *owned* here for the whole run on purpose: dropping it flushes and
+//! stops the writer thread, so a logger that only borrowed it would silently discard
+//! buffered records at shutdown - and the records this layer buffers are exactly the
+//! kill-switch trail an operator reads afterwards.
 
 use tracing::{info, debug, warn, error};
 use tracing_appender::non_blocking::WorkerGuard;
@@ -6,20 +18,33 @@ use std::sync::Arc;
 
 /// Asynchronous logger
 pub struct AsyncLogger {
-    _guard: Arc<WorkerGuard>, // Keep guard alive
-    is_initialized: bool,
+    /// Keeps the non-blocking writer thread alive. `None` means records go straight
+    /// to the process-wide subscriber instead of a dedicated sink.
+    _guard: Option<Arc<WorkerGuard>>,
+    has_dedicated_sink: bool,
 }
 
 impl AsyncLogger {
-    /// Create a new asynchronous logger
+    /// Log through the process-wide subscriber only (no dedicated file sink).
     pub fn new() -> Self {
-        // In a real implementation, this would set up tracing with non-blocking appenders
-        // For now, we'll use the global subscriber that's already initialized
-        
         Self {
-            _guard: Arc::new(WorkerGuard::default()), // Placeholder
-            is_initialized: true,
+            _guard: None,
+            has_dedicated_sink: false,
         }
+    }
+    
+    /// Attach a caller-created non-blocking writer guard and keep it (with its writer
+    /// thread) alive for as long as this logger lives.
+    pub fn with_guard(guard: WorkerGuard) -> Self {
+        Self {
+            _guard: Some(Arc::new(guard)),
+            has_dedicated_sink: true,
+        }
+    }
+    
+    /// Whether a dedicated non-blocking sink is attached to this logger.
+    pub fn has_dedicated_sink(&self) -> bool {
+        self.has_dedicated_sink
     }
     
     /// Log a trade execution event
@@ -50,10 +75,5 @@ impl AsyncLogger {
     /// Log a recovery event
     pub fn log_recovery_event(&self, event_type: &str, details: &str) {
         info!("RECOVERY: {} - {}", event_type, details);
-    }
-    
-    /// Check if logger is initialized
-    pub fn is_initialized(&self) -> bool {
-        self.is_initialized
     }
 }

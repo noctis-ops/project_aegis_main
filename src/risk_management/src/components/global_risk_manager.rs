@@ -1,6 +1,6 @@
 //! Global Risk Manager implementation
 
-use crate::core::{RiskConfig, PortfolioState, TradeRecord, MaeMfeMetrics};
+use crate::core::{RiskConfig, PortfolioState, TradeRecord, MaeMfeMetrics, trim_to_last};
 use tracing::{info, warn, debug};
 use std::collections::VecDeque;
 
@@ -17,9 +17,14 @@ pub struct GlobalRiskManager {
 impl GlobalRiskManager {
     /// Create a new Global Risk Manager
     pub fn new(config: RiskConfig) -> Self {
+        // Read the starting level before `config` moves into the struct: this is the
+        // value `reset_risk_percentage` later restores, so it must be the configured
+        // one and not a re-derived guess.
+        let current_risk_percentage = config.default_risk_percentage;
+        
         Self {
             config,
-            current_risk_percentage: config.default_risk_percentage,
+            current_risk_percentage,
             consecutive_losses: 0,
             trade_history: VecDeque::new(),
             mae_mfe_tracking: Vec::new(),
@@ -104,10 +109,18 @@ impl GlobalRiskManager {
     
     /// Track MAE/MFE for a trade
     pub fn track_mae_mfe(&mut self, metrics: MaeMfeMetrics) {
+        // Latched before `metrics` is moved into the buffer; the breach verdict is
+        // also what the Layer 2 lag diagnostic below keys off.
+        let breached_stop = metrics.is_stop_loss_breached;
+        
         self.mae_mfe_tracking.push(metrics);
         
+        // Same bounded-window rule as the rolling detectors and `trade_history`:
+        // one record arrives per trade, so an unbounded Vec here leaks the session.
+        trim_to_last(&mut self.mae_mfe_tracking, self.max_history_size);
+        
         // Check if stop loss is being consistently breached
-        if metrics.is_stop_loss_breached {
+        if breached_stop {
             let breach_count = self.mae_mfe_tracking.iter()
                 .filter(|m| m.is_stop_loss_breached)
                 .count();

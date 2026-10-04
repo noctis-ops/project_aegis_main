@@ -110,23 +110,40 @@ impl RiskManagementSystem {
         circuit_breaker_status: &Arc<std::sync::RwLock<CircuitBreakerStatus>>
     ) {
         let current_status = {
-            let status = circuit_breaker_status.read().unwrap();
+            let status = circuit_breaker_status
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             status.clone()
         };
         
         match current_status {
             CircuitBreakerStatus::KillSwitch => {
-                // Enter cooldown period
-                let mut recovery = recovery_state.write().unwrap();
-                *recovery = RecoveryState::Cooldown;
+                // Enter cooldown. Checked and written under the same lock, and only
+                // logged on the transition: this task ticks every 10s while the
+                // breaker stays tripped, so a repeated "cooldown started" line
+                // buries the reason that actually mattered.
+                let mut recovery = recovery_state
+                    .write()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                
+                if *recovery != RecoveryState::Cooldown {
+                    *recovery = RecoveryState::Cooldown;
+                    warn!("RECOVERY: Kill switch tripped - trading halted, cooldown engaged");
+                }
             }
             _ => {
-                // Check if we can transition out of cooldown
-                let recovery = recovery_state.read().unwrap();
+                // Reading the cooldown clock and stepping into cautious resumption
+                // belongs to RecoveryProtocol, which owns the cooldown start instant,
+                // the 15-minute window and the successful-trade ladder. This task
+                // holds neither, so it deliberately does not release the halt: an
+                // engine that stays halted on a timer it cannot verify is fail-safe,
+                // one that resumes on a guess is not.
+                let recovery = recovery_state
+                    .read()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                
                 if let RecoveryState::Cooldown = *recovery {
-                    // Check cooldown timer
-                    // In a real implementation, we would check elapsed time
-                    // and transition to cautious resumption if cooldown is over
+                    debug!("RECOVERY: still in cooldown; awaiting RecoveryProtocol resumption");
                 }
             }
         }
@@ -139,10 +156,11 @@ impl RiskManagementSystem {
     
     /// Record trade execution
     pub fn record_trade(&self, trade_id: String, record: TradeRecord) {
-        self.trade_records.insert(trade_id, record);
-        
-        // Update performance analyzer
+        // Feed the analyzer from a borrow first, then move the record into the book
+        // of record. Cloning it to satisfy both would allocate on every fill for a
+        // copy the analyzer no longer keeps (it only counts trades).
         self.performance_analyzer.update_with_trade(&record);
+        self.trade_records.insert(trade_id, record);
     }
     
     /// Get current risk percentage

@@ -1,6 +1,11 @@
 //! Recovery and resumption protocol implementation
 
 use crate::core::{RecoveryState, PortfolioState};
+// Imported from their defining modules, not through `protocols`' own glob
+// re-export: the re-export is a convenience for external callers and would make
+// this module depend on its own parent's export list.
+use crate::protocols::health_check::HealthChecker;
+use crate::protocols::recalibration::Recalibrator;
 use tracing::{info, warn, error};
 use std::sync::{Arc, RwLock};
 use std::time::{Instant, Duration};
@@ -106,7 +111,21 @@ impl RecoveryProtocol {
     
     /// Perform health check during recovery
     pub fn perform_health_check(&self, portfolio_state: &PortfolioState) -> bool {
-        self.health_checker.perform_comprehensive_check(portfolio_state)
+        let healthy = self.health_checker.perform_comprehensive_check(portfolio_state);
+        
+        // A failed check gates the whole resumption ladder, and nothing else in the
+        // system notices: the caller only receives a bool, so this is where the
+        // reason has to reach the operator trail.
+        if !healthy {
+            warn!(
+                "RECOVERY_PROTOCOL: health check FAILED {}s after the previous one; \
+                 resumption stays gated and the system remains in {:?}",
+                self.health_checker.time_since_last_check().as_secs(),
+                self.get_recovery_state()
+            );
+        }
+        
+        healthy
     }
     
     /// Get current recovery state
