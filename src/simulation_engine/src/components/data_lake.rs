@@ -27,7 +27,7 @@ use crate::core::{
 use crate::core::constants::MIN_EPOCH_MILLIS;
 use chrono::DateTime;
 use parquet::file::reader::{FileReader, SerializedFileReader};
-use parquet::record::Row;
+use parquet::record::{Row, RowAccessor};
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashMap;
