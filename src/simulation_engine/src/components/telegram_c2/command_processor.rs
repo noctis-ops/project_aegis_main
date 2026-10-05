@@ -215,9 +215,13 @@ impl CommandProcessor {
         }
     }
     
-    /// Generate daily confirmation code
-    pub fn generate_daily_confirmation_code(&mut self) -> String {
-        self.security_validator.generate_daily_confirmation_code()
+    /// Issue a single-use confirmation code for a sensitive command.
+    ///
+    /// The log line it prints is how the code reaches the engineer; see
+    /// `SecurityValidator::issue_confirmation_code` for the lifetime and the reason the
+    /// old date-derived code was replaced.
+    pub fn issue_confirmation_code(&mut self) -> String {
+        self.security_validator.issue_confirmation_code()
     }
     
     /// Check if processor is initialized

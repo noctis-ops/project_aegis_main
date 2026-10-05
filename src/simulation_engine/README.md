@@ -91,6 +91,11 @@ Key Isolation: Component contains no Binance API keys. Merely a "signal transmit
 - `/risk [percentage]`: Modifies dynamic risk coefficient (e.g., `/risk 0.5` to reduce risk to 0.5%)
 - `/mode [shadow/live]`: Switches between shadow trading and live trading modes (requires safe restart)
 
+  The code `/halt` and `/mode live` demand is issued by `SecurityValidator::issue_confirmation_code`:
+  random, single use, valid for 15 minutes, printed once in the log at issue time. It used to be
+  `AEGIS{YYYYMMDD}` - computable in advance by anyone who knew the format, for the one credential
+  that hands the bot real money.
+
 **Instant Notifications (Push Telemetry):**
 Bot sends automatic Arabic messages for: (trade opening, trade closing, circuit breaker activation, connection errors)
 

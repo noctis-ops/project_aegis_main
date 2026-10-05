@@ -643,8 +643,11 @@ pub fn sharpe_ratio(curve: &[(i64, f64)]) -> f64 {
         return 0.0;
     }
 
-    let mean = mean(&returns);
-    let variance = returns.iter().map(|r| (r - mean) * (r - mean)).sum::<f64>() / returns.len() as f64;
+    // Named apart from the helper: a local called `mean` would shadow `fn mean` for
+    // every later statement in this block.
+    let mean_return = mean(&returns);
+    let variance =
+        returns.iter().map(|r| (r - mean_return) * (r - mean_return)).sum::<f64>() / returns.len() as f64;
     let deviation = variance.sqrt();
 
     if deviation <= 0.0 {
@@ -656,7 +659,7 @@ pub fn sharpe_ratio(curve: &[(i64, f64)]) -> f64 {
         return 0.0;
     }
 
-    (mean / deviation) * (SECONDS_PER_YEAR / mean_step).sqrt()
+    (mean_return / deviation) * (SECONDS_PER_YEAR / mean_step).sqrt()
 }
 
 /// Share of closed rounds that made money.

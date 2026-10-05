@@ -27,6 +27,7 @@ use crate::core::{
 use crate::core::constants::MIN_EPOCH_MILLIS;
 use chrono::DateTime;
 use parquet::file::reader::{FileReader, SerializedFileReader};
+use parquet::record::Row;
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -296,18 +297,15 @@ impl DataLake {
         })?;
 
         let reader = SerializedFileReader::new(file)?;
-        // The record (row) API rather than arrow: this crate depends on `parquet` but
-        // deliberately not on the `arrow` umbrella (see Cargo.toml), and every field of
-        // a market event is a scalar the row API reads fine.
+        // The record (row) API rather than the arrow columnar path: this crate depends
+        // on `parquet` but deliberately not on the `arrow` umbrella (see Cargo.toml).
         let rows = reader.get_row_iter(None)?;
 
-        let values: Vec<Value> = {
-            let mut values = Vec::new();
-            for row in rows {
-                values.push(row?.to_json_value());
-            }
-            values
-        };
+        let mut values = Vec::new();
+        for row in rows {
+            let row = row?;
+            values.push(row_to_json(&row));
+        }
 
         self.materialize(path, values)
     }
@@ -316,7 +314,8 @@ impl DataLake {
     /// dropping them quietly: a file of the wrong shape has to be visible in the log of
     /// the run that ignored it.
     fn materialize(&self, path: &Path, values: Vec<Value>) -> Result<Vec<MarketEvent>, SimulationError> {
-        let mut events = Vec::with_capacity(values.len());
+        let total = values.len();
+        let mut events = Vec::with_capacity(total);
         let mut unreadable = 0usize;
         let mut first_error: Option<String> = None;
 
@@ -337,15 +336,15 @@ impl DataLake {
                 "{}: {} of {} row(s) are not market events (first: {})",
                 path.display(),
                 unreadable,
-                values.len(),
+                total,
                 first_error.unwrap_or_default()
             );
         }
-        if events.is_empty() && !values.is_empty() {
+        if events.is_empty() && total > 0 {
             return Err(SimulationError::DataLoadingError(format!(
-                "{}: {} row(s) read, none of them a market event - check the column names against EventRow",
+                "{}: {} row(s) read, none of them a market event - check the column names                  against EventRow (order books in Parquet must use the paired bid_price_i /                  bid_qty_i columns, since the row API cannot read nested list columns)",
                 path.display(),
-                values.len()
+                total
             )));
         }
 
@@ -361,6 +360,53 @@ impl DataLake {
     pub fn data_path(&self) -> &str {
         &self.data_path
     }
+}
+
+/// The first typed read that succeeds. Tick exporters disagree about whether a price
+/// is a double or a string and whether a timestamp is an int64 or a timestamp, so a
+/// column is read across the physical types instead of failing the whole file.
+fn column_value(row: &Row, index: usize) -> Option<Value> {
+    if let Ok(value) = row.get_double(index) {
+        return Some(Value::from(value));
+    }
+    if let Ok(value) = row.get_float(index) {
+        return Some(Value::from(f64::from(value)));
+    }
+    if let Ok(value) = row.get_long(index) {
+        return Some(Value::from(value));
+    }
+    if let Ok(value) = row.get_int(index) {
+        return Some(Value::from(i64::from(value)));
+    }
+    if let Ok(text) = row.get_string(index) {
+        return Some(Value::String(text.clone()));
+    }
+    if let Ok(flag) = row.get_bool(index) {
+        return Some(Value::Bool(flag));
+    }
+    // A null (or a list/group the record API cannot flatten) is left out, which reads
+    // as an absent field to EventRow rather than as a fabricated zero.
+    None
+}
+
+/// Project one Parquet row onto a JSON object keyed by column name.
+///
+/// `Row` carries no `to_json_value` in the pinned `parquet` release, and the arrow path
+/// would mean re-adding the umbrella crate this crate dropped (arrow <= 54 does not
+/// build against chrono >= 0.4.40), so rows are flattened through the record API's
+/// typed getters instead.
+fn row_to_json(row: &Row) -> Value {
+    let mut object = serde_json::Map::new();
+
+    // `get_column_iter` yields columns in file-schema order, so the same index serves
+    // for the name and for the positional getter above.
+    for (index, (name, _)) in row.get_column_iter().enumerate() {
+        if let Some(value) = column_value(row, index) {
+            object.insert(name.to_string(), value);
+        }
+    }
+
+    Value::Object(object)
 }
 
 fn is_event_file(path: &Path) -> bool {

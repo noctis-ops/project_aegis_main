@@ -47,7 +47,7 @@ impl ValidationPipeline {
             ));
         }
         for (name, min_value, max_value) in &params.parameter_ranges {
-            if !min_value.is_finite() || !max_value.is_finite() || max_value < *min_value {
+            if !min_value.is_finite() || !max_value.is_finite() || max_value < min_value {
                 return Err(SimulationError::InvalidConfig(format!(
                     "Range [{}, {}] for '{}' is not a usable interval",
                     min_value, max_value, name
