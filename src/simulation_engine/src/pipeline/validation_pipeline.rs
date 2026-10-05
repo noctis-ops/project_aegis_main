@@ -370,7 +370,7 @@ mod tests {
     #[test]
     fn every_swept_knob_round_trips_through_the_config() {
         let mut config = SimulationConfig::default();
-        for name in crate::core::StrategyParams::SWEPT_KNOBS {
+        for &name in crate::core::StrategyParams::SWEPT_KNOBS {
             config.strategy.set_knob(name, 0.0).ok();
             // A zero is a legitimate probe only for the fractional knobs; the counted
             // ones are floored at one so a division never sees zero.

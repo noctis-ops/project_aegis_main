@@ -514,16 +514,15 @@ mod tests {
         }
 
         let mut at = 100_000;
-        loop {
-            // Step past the cooldown so the volatility gate is what decides.
+        // Stepping past the cooldown is only the setup; what the test judges is the
+        // decision the loop actually stopped on, so the outcome is bound rather than
+        // thrown away and re-asked of a later snapshot.
+        let decision = loop {
             match strat.on_snapshot(&book(&[(40000.0, 4.0)], &[(40001.0, 1.0)], at), 10_000.0, 10.0) {
                 EntryDecision::Rejected(Rejection::Cooldown) => at += SIM_SIGNAL_COOLDOWN_MS as i64 + 1,
                 other => break other,
             }
-        }
-        assert_eq!(
-            strat.on_snapshot(&book(&[(40000.0, 4.0)], &[(40001.0, 1.0)], at + 10_000), 10_000.0, 10.0),
-            EntryDecision::Rejected(Rejection::VolatilityGate)
-        );
+        };
+        assert_eq!(decision, EntryDecision::Rejected(Rejection::VolatilityGate));
     }
 }

@@ -744,6 +744,24 @@ mod tests {
         })
     }
 
+    /// An intent shaped like the strategy's own: 0.5% stop, 1% target, one TTL.
+    fn intent(side: TradeSide, size: f64) -> TradeIntent {
+        let (stop_loss, take_profit) = match side {
+            TradeSide::Buy => (39_800.0, 40_400.0),
+            TradeSide::Sell => (40_200.0, 39_600.0),
+        };
+        TradeIntent {
+            symbol: "BTCUSDT".to_string(),
+            side,
+            price: 40_000.0,
+            size,
+            stop_loss,
+            take_profit,
+            time_to_live: crate::core::constants::SIM_ORDER_TTL_MS,
+            timestamp: T0 as u64,
+        }
+    }
+
     #[tokio::test]
     async fn a_full_round_trip_is_measured_not_assumed() {
         let engine = BacktestingEngine::new();
@@ -854,18 +872,28 @@ mod tests {
 
     #[test]
     fn invalid_configurations_are_refused_before_replay() {
-        let engine = BacktestingEngine::new();
-
+        // `validate` is an associated function - it judges the configuration alone, which
+        // is the point: no state a run happens to be in can excuse an empty window, a
+        // threshold outside (0, 1), or a negative fee.
         let empty_window = config(T0, T0, 10_000.0);
-        assert!(engine.validate(&empty_window).is_err());
+        assert!(
+            BacktestingEngine::validate(&empty_window).is_err(),
+            "an empty window measures nothing and must not be replayed"
+        );
 
         let mut bad_threshold = config(T0, T0 + 60_000, 10_000.0);
         bad_threshold.strategy.obi_threshold = 1.5;
-        assert!(engine.validate(&bad_threshold).is_err());
+        assert!(
+            BacktestingEngine::validate(&bad_threshold).is_err(),
+            "OBI is bounded by [-1, 1], so a 1.5 threshold asks for a signal that cannot exist"
+        );
 
         let mut negative_fees = config(T0, T0 + 60_000, 10_000.0);
         negative_fees.maker_fee_rate = -0.001;
-        assert!(engine.validate(&negative_fees).is_err());
+        assert!(
+            BacktestingEngine::validate(&negative_fees).is_err(),
+            "a negative fee would pay the strategy for trading"
+        );
     }
 
     #[tokio::test]
@@ -907,14 +935,54 @@ mod tests {
 
     #[test]
     fn funding_is_charged_against_open_exposure() {
-        let engine = BacktestingEngine::new();
+        let funding = |symbol: &str, timestamp: i64, rate: f64| FundingRateEvent {
+            symbol: symbol.to_string(),
+            timestamp,
+            rate,
+        };
+
         let mut run = RunState::new(config(T0, T0 + 60_000, 10_000.0)).unwrap();
         run.current_time = T0 + 1_000;
         run.last_prices.insert("BTCUSDT".to_string(), 40_000.0);
 
-        // No exposure: funding is free.
-        run.on_funding(FundingRateEvent { symbol: "BTCUSDT".to_string(), timestamp: T0 + 1_000, rate: 0.001 }).unwrap();
+        // Flat: funding is free.
+        run.on_funding(funding("BTCUSDT", T0 + 1_000, 0.001)).unwrap();
         assert_eq!(run.funding_paid, 0.0);
+
+        // A rate for a symbol the run has no print for is a gap in the feed. It has to
+        // stay non-fatal and must not book a charge against an unknown mark.
+        run.on_funding(funding("ETHUSDT", T0 + 1_500, 0.001))
+            .expect("a missing mark price is reported, not fatal");
+        assert_eq!(run.funding_paid, 0.0);
+
+        // rate * mark * signed exposure: a 1 BTC long pays 40 USDT at 0.1%.
+        run.pnl
+            .record_trade_execution(&intent(TradeSide::Buy, 1.0), 40_000.0, true)
+            .expect("a maker fill is recorded");
+        run.on_funding(funding("BTCUSDT", T0 + 2_000, 0.001)).unwrap();
+        assert!(
+            (run.funding_paid - 40.0).abs() < 1e-9,
+            "a long should have paid 40 USDT, paid {}",
+            run.funding_paid
+        );
+
+        // The mirror case decides the sign, not the size: the same rate is received by a
+        // short. Kept in a second ledger so the first one's exposure stays 1.0.
+        let mut short_run = RunState::new(config(T0, T0 + 60_000, 10_000.0)).unwrap();
+        short_run.current_time = T0 + 1_000;
+        short_run.last_prices.insert("BTCUSDT".to_string(), 40_000.0);
+        short_run
+            .pnl
+            .record_trade_execution(&intent(TradeSide::Sell, 1.0), 40_000.0, true)
+            .expect("a maker fill is recorded");
+        short_run
+            .on_funding(funding("BTCUSDT", T0 + 2_000, 0.001))
+            .unwrap();
+        assert!(
+            (short_run.funding_paid + 40.0).abs() < 1e-9,
+            "a short should have received 40 USDT, paid {}",
+            short_run.funding_paid
+        );
     }
 
 }
