@@ -9,8 +9,17 @@ serde_json = "1.0"
 tokio = { version = "1.0", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = "0.3"
+# Parquet is the Data Lake's storage format and backs
+# SimulationError::ParquetError, so it stays.
 parquet = "50.0"
-arrow = "50.0"
+# The `arrow` umbrella crate was removed on purpose: no line in this layer uses it,
+# and it was the only thing pulling in `arrow-arith`, whose private
+# ChronoDateExt::quarter() became ambiguous with chrono 0.4.40's new
+# Datelike::quarter() - arrow <= 54.2.0 therefore fails to compile at all
+# (apache/arrow-rs#7196; upstream's own fix in 54.2.1 was to bound chrono).
+# When the real Parquet reader lands, add `arrow` back at >= 54.2.1 (or 55+); if an
+# older arrow is ever forced on us, apply the same ceiling here:
+#   chrono = ">=0.4.34, <0.4.40"
 rand = "0.8"
 chrono = { version = "0.4", features = ["serde"] }
 thiserror = "1.0"

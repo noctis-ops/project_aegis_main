@@ -52,8 +52,11 @@ impl DataLake {
     
     /// Read order book snapshots from Parquet file
     fn read_orderbook_snapshots(&self, _file_path: &str) -> Result<Vec<MarketEvent>, SimulationError> {
-        // In a real implementation, this would read Parquet files using arrow/parquet crates
-        // For now, we'll return mock data
+        // Mock data on purpose: this returns a fixed snapshot so the whole pipeline
+        // runs without a data lake present. When the real reader lands it goes through
+        // `parquet::arrow::SerializedFileReader`; `parquet` is already a dependency, and
+        // the `arrow` umbrella crate must be re-added pinned per the note in
+        // Cargo.toml (arrow <= 54.2.0 does not build against chrono >= 0.4.40).
         let events = vec![
             MarketEvent::OrderBookSnapshot(crate::core::OrderBookSnapshot {
                 symbol: "BTCUSDT".to_string(),
