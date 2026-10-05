@@ -342,7 +342,10 @@ impl DataLake {
         }
         if events.is_empty() && total > 0 {
             return Err(SimulationError::DataLoadingError(format!(
-                "{}: {} row(s) read, none of them a market event - check the column names                  against EventRow (order books in Parquet must use the paired bid_price_i /                  bid_qty_i columns, since the row API cannot read nested list columns)",
+                "{}: {} row(s) read, none of them a market event - check the column names \
+                 against EventRow (order books in Parquet must use the paired \
+                 bid_price_i / bid_qty_i columns, because the row API cannot read nested \
+                 list columns)",
                 path.display(),
                 total
             )));
