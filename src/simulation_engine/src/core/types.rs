@@ -50,10 +50,39 @@ pub struct TradeEvent {
 }
 
 /// Trade side enumeration
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+///
+/// `Copy` because it is a fieldless tag that every fill record needs in order to
+/// *keep* a value rather than borrow one: the shadow ledger reads
+/// `intent.side` out of a borrowed [`TradeIntent`] while recording a trade, and
+/// without `Copy` that access is a move out of a shared reference.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TradeSide {
     Buy,
     Sell,
+}
+
+/// A signal to open (or flip) a position: the unit the shadow engine consumes.
+///
+/// This is the same struct the execution layer passes around
+/// (`alpha_engine::core::TradeIntent`), re-declared here because the layers are
+/// independent crates - the simulated path has to accept exactly what the live
+/// path produces. It is deliberately *not* [`TradeEvent`]: a `TradeEvent` is a
+/// trade printed by the market in the replay feed and carries no client size,
+/// no stop-loss and no time-to-live, so it cannot drive queue-position or PnL
+/// math.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TradeIntent {
+    pub symbol: String,
+    pub side: TradeSide,
+    pub price: f64,
+    pub size: f64,
+    pub stop_loss: f64,
+    pub take_profit: f64,
+    pub time_to_live: u64, // milliseconds
+    /// Signal time in milliseconds since the epoch, as produced by the alpha
+    /// engine. The shadow ledger keeps this unit instead of narrowing it to the
+    /// seconds used by the market events above.
+    pub timestamp: u64,
 }
 
 /// Funding rate event

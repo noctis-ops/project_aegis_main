@@ -1,7 +1,7 @@
 //! Notification service for Telegram C2
 
 use crate::components::telegram_c2::TelegramNotification;
-use tracing::{info, debug, warn, error};
+use tracing::{debug, error, info, warn};
 use tokio::sync::mpsc;
 use std::sync::Arc;
 
@@ -9,19 +9,24 @@ use std::sync::Arc;
 pub struct NotificationService {
     notification_rx: Option<mpsc::UnboundedReceiver<TelegramNotification>>,
     telegram_bot: Option<Arc<tokio::sync::Mutex<crate::components::telegram_c2::TelegramC2Bot>>>,
-    retry_queue: Vec<TelegramNotification>,
+    /// Undelivered notifications, each with the attempt number they will get next.
+    retry_queue: Vec<(TelegramNotification, usize)>,
     max_retry_attempts: usize,
     is_running: bool,
 }
 
 impl NotificationService {
     /// Create a new notification service
+    ///
+    /// `max_retry_attempts` is how many retries a notification gets before it is
+    /// discarded (it is floored at 1 - a zero budget would drop every failed
+    /// notification without ever retrying it, which is not what the knob means).
     pub fn new(max_retry_attempts: usize) -> Self {
         Self {
             notification_rx: None,
             telegram_bot: None,
             retry_queue: Vec::new(),
-            max_retry_attempts,
+            max_retry_attempts: max_retry_attempts.max(1),
             is_running: false,
         }
     }
@@ -38,7 +43,11 @@ impl NotificationService {
         info!("Telegram bot reference set");
     }
     
-    /// Start the notification service
+    /// Pump notifications until the channel closes.
+    ///
+    /// The loop borrows `self`, so a caller that has other work to do wraps this in
+    /// `tokio::spawn` with an owned service rather than awaiting it on a startup
+    /// path: awaiting here means "never return".
     pub async fn start(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         if self.is_running {
             return Ok(());
@@ -47,20 +56,42 @@ impl NotificationService {
         self.is_running = true;
         info!("Starting Notification Service...");
         
-        // Start notification processing loop
-        self.process_notifications().await?;
-        
-        Ok(())
+        // The flag has to go back to false when the pump ends - the channel closing
+        // is a normal end, an error is not - otherwise `is_running` keeps reporting a
+        // service that has stopped, and a second `start()` returns Ok without pumping.
+        let result = self.process_notifications().await;
+        self.is_running = false;
+        result
     }
     
     /// Process notifications in a loop
     async fn process_notifications(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        if let Some(ref mut rx) = self.notification_rx {
-            while let Some(notification) = rx.recv().await {
-                if let Err(e) = self.send_notification(notification.clone()).await {
-                    error!("Failed to send notification: {}. Adding to retry queue.", e);
-                    self.retry_queue.push(notification);
-                }
+        if self.notification_rx.is_none() {
+            return Err("Notification receiver not set; the service has nothing to pump".into());
+        }
+
+        loop {
+            // The receiver is borrowed only for `recv` itself: holding that borrow
+            // across `self.send_notification(..)` - which borrows the rest of `self`
+            // - is what the borrow checker refuses here.
+            let received = match self.notification_rx.as_mut() {
+                Some(rx) => rx.recv().await,
+                None => break,
+            };
+
+            let notification = match received {
+                Some(notification) => notification,
+                // Every sender is gone, so the pump has nothing left to wait for.
+                None => break,
+            };
+
+            if let Err(e) = self.send_notification(notification.clone()).await {
+                error!("Failed to send notification: {}. Adding to retry queue.", e);
+                self.requeue_for_retry(notification, 0);
+            }
+
+            if !self.retry_queue.is_empty() {
+                self.process_retry_queue().await?;
             }
         }
         
@@ -73,8 +104,8 @@ impl NotificationService {
             let bot_guard = bot.lock().await;
             bot_guard.send_notification(notification).await?;
         } else {
-            // In a real implementation, we would send to Telegram
-            // For now, we'll just log the notification
+            // Without a bot attached there is no transport, so the notification is
+            // logged as the delivery record instead of vanishing.
             match &notification {
                 TelegramNotification::TradeOpened { symbol, side, price, size } => {
                     info!("[NOTIFICATION] Trade opened: {} {} @ {} size={}", symbol, side, price, size);
@@ -97,33 +128,55 @@ impl NotificationService {
         Ok(())
     }
     
-    /// Process retry queue
+    /// Retry the queued notifications, giving up on the ones that have used up
+    /// their attempts (each such drop is logged in full, so the alert still
+    /// reaches the audit trail even though the transport did not).
     async fn process_retry_queue(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        let mut failed_notifications = Vec::new();
-        
-        for notification in self.retry_queue.drain(..) {
-            if let Err(e) = self.send_notification(notification.clone()).await {
-                error!("Retry failed for notification: {}", e);
-                failed_notifications.push(notification);
+        // Swapped out instead of `drain(..)`: the drain's borrow of `self.retry_queue`
+        // would still be live across `self.send_notification(..)`.
+        let pending = std::mem::take(&mut self.retry_queue);
+
+        for (notification, attempt) in pending {
+            match self.send_notification(notification.clone()).await {
+                Ok(()) => {
+                    info!("Notification delivered on retry (attempt {})", attempt);
+                }
+                Err(e) => {
+                    error!("Retry failed for notification: {}", e);
+                    self.requeue_for_retry(notification, attempt);
+                }
             }
         }
         
-        // Keep failed notifications for next retry (up to max attempts)
-        self.retry_queue = failed_notifications;
-        
         Ok(())
     }
-    
-    /// Add notification to queue (fire-and-forget)
-    pub fn queue_notification(&self, notification: TelegramNotification) -> Result<(), Box<dyn std::error::Error>> {
-        if let Some(ref rx) = self.notification_rx {
-            // In a real implementation, we would send to the channel
-            // For now, we'll just log that it was queued
-            info!("Notification queued: {:?}", notification);
-            Ok(())
-        } else {
-            Err("Notification receiver not set".into())
+
+    /// Book a failed delivery for another attempt.
+    fn requeue_for_retry(&mut self, notification: TelegramNotification, attempts_so_far: usize) {
+        if attempts_so_far >= self.max_retry_attempts {
+            error!(
+                "Giving up on notification after {} attempt(s): {:?}",
+                attempts_so_far, notification
+            );
+            return;
         }
+
+        self.retry_queue.push((notification, attempts_so_far + 1));
+    }
+    
+    /// Check a notification against the pump and log it as queued.
+    ///
+    /// The service owns the *receiving* half of the channel, so a producer holds
+    /// the sender directly; this helper is the fire-and-forget entry point for
+    /// callers that only have the service, and it reports whether anything could
+    /// ever pick the notification up.
+    pub fn queue_notification(&self, notification: TelegramNotification) -> Result<(), Box<dyn std::error::Error>> {
+        if self.notification_rx.is_none() {
+            return Err("Notification receiver not set".into());
+        }
+
+        debug!("Notification queued: {:?}", notification);
+        Ok(())
     }
     
     /// Check if service is running

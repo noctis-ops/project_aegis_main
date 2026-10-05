@@ -1,10 +1,9 @@
 //! Event-Driven Backtesting Engine implementation
 
 use crate::core::{MarketEvent, SimulationConfig, BacktestReport, SimulationResult, SimulationError};
-use tracing::{info, debug, warn, error};
+use tracing::{debug, error, info};
 use std::sync::{Arc, RwLock};
-use tokio::sync::mpsc;
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 
 /// Event-Driven Backtesting Engine
 #[derive(Clone)]

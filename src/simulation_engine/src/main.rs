@@ -21,6 +21,10 @@ async fn main() -> std::process::ExitCode {
     info!("Starting Project AEGIS - Layer 5 Simulation Engine");
     
     let mut engine = SimulationEngine::new();
+    info!(
+        "Active execution backend: {:?} (a live backend has to be armed explicitly)",
+        engine.execution_mode()
+    );
     
     if let Err(e) = engine.start().await {
         error!("Simulation engine terminated with error: {}", e);

@@ -1,19 +1,15 @@
 //! Capital Adapter for simulation testing
 
-use crate::core::{CapitalAdaptationTestCase, BacktestReport, SimulationError};
-use tracing::{info, debug, warn, error};
+use crate::core::{CapitalAdaptationTestCase, BacktestReport};
+use tracing::{debug, error, info};
 
 /// Capital Adapter for testing different capital scenarios
-pub struct CapitalAdapter {
-    test_cases: Vec<CapitalAdaptationTestCase>,
-}
+pub struct CapitalAdapter;
 
 impl CapitalAdapter {
     /// Create a new Capital Adapter
     pub fn new() -> Self {
-        Self {
-            test_cases: Vec::new(),
-        }
+        Self
     }
     
     /// Generate test cases for capital adaptation

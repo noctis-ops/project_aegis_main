@@ -1,7 +1,7 @@
 //! CI/CD Pipeline implementation
 
 use crate::core::{SimulationConfig, BacktestReport, SimulationError};
-use tracing::{info, debug, warn, error};
+use tracing::{error, info};
 use std::process::Command;
 
 /// CI/CD Pipeline for automated testing and deployment

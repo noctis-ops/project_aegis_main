@@ -1,7 +1,8 @@
 //! Command processor for Telegram C2
 
+use crate::components::shadow_trading::ExecutionEngineType;
 use crate::components::telegram_c2::{TelegramCommand, SecurityValidator};
-use tracing::{info, debug, warn, error};
+use tracing::{error, info, warn};
 use tokio::sync::mpsc;
 
 /// Command processor for Telegram C2
@@ -24,7 +25,7 @@ pub enum RiskManagementCommand {
 /// Execution engine commands
 #[derive(Debug, Clone)]
 pub enum ExecutionEngineCommand {
-    SetMode(crate::components::shadow_trading::ExecutionEngineType),
+    SetMode(ExecutionEngineType),
     GetStatus,
 }
 
@@ -84,8 +85,8 @@ impl CommandProcessor {
             TelegramCommand::SetRisk { percentage } => {
                 self.process_set_risk_command(user_id, percentage).await?;
             }
-            TelegramCommand::SetMode { mode } => {
-                self.process_set_mode_command(user_id, mode).await?;
+            TelegramCommand::SetMode { mode, confirmation_code } => {
+                self.process_set_mode_command(user_id, mode, confirmation_code).await?;
             }
             TelegramCommand::Help => {
                 // Help is handled by the bot itself
@@ -99,14 +100,9 @@ impl CommandProcessor {
     async fn process_status_command(&self, user_id: i64) -> Result<(), Box<dyn std::error::Error>> {
         info!("Processing status command for user {}", user_id);
         
-        // Send status requests to both risk manager and execution engine
-        if let Some(tx) = &self.risk_manager_tx {
-            let _ = tx.send(RiskManagementCommand::GetStatus);
-        }
-        
-        if let Some(tx) = &self.execution_engine_tx {
-            let _ = tx.send(ExecutionEngineCommand::GetStatus);
-        }
+        // Ask both subsystems; either one may answer, the other is not an error.
+        self.send_to_risk_manager(RiskManagementCommand::GetStatus, "Status request");
+        self.send_to_execution_engine(ExecutionEngineCommand::GetStatus, "Status request");
         
         Ok(())
     }
@@ -122,10 +118,7 @@ impl CommandProcessor {
         }
         
         // Send halt command to risk manager
-        if let Some(tx) = &self.risk_manager_tx {
-            let _ = tx.send(RiskManagementCommand::HaltSystem);
-            info!("Halt command sent to risk manager");
-        }
+        self.send_to_risk_manager(RiskManagementCommand::HaltSystem, "Halt command");
         
         Ok(())
     }
@@ -135,10 +128,7 @@ impl CommandProcessor {
         info!("Processing resume command for user {}", user_id);
         
         // Send resume command to risk manager
-        if let Some(tx) = &self.risk_manager_tx {
-            let _ = tx.send(RiskManagementCommand::ResumeSystem);
-            info!("Resume command sent to risk manager");
-        }
+        self.send_to_risk_manager(RiskManagementCommand::ResumeSystem, "Resume command");
         
         Ok(())
     }
@@ -154,31 +144,75 @@ impl CommandProcessor {
         }
         
         // Send set risk command to risk manager
-        if let Some(tx) = &self.risk_manager_tx {
-            let _ = tx.send(RiskManagementCommand::SetRiskPercentage(percentage));
-            info!("Set risk command sent to risk manager: {}%", percentage);
-        }
+        self.send_to_risk_manager(
+            RiskManagementCommand::SetRiskPercentage(percentage),
+            &format!("Risk percentage update to {:.4}%", percentage),
+        );
         
         Ok(())
     }
     
     /// Process set mode command
-    async fn process_set_mode_command(&mut self, user_id: i64, mode: crate::components::shadow_trading::ExecutionEngineType) -> Result<(), Box<dyn std::error::Error>> {
+    async fn process_set_mode_command(
+        &mut self,
+        user_id: i64,
+        mode: ExecutionEngineType,
+        confirmation_code: Option<String>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         info!("Processing set mode command for user {}: {:?}", user_id, mode);
         
-        // For live mode, require additional confirmation
-        if matches!(mode, crate::components::shadow_trading::ExecutionEngineType::Live) {
-            // In a real implementation, we would ask for confirmation code
-            // For now, we'll proceed directly
+        // Arming the live path submits real orders, so it is gated by the same
+        // single-use confirmation code as `halt`: the validator already knows the
+        // "mode_live" command, this call site just never asked it to check anything.
+        if matches!(mode, ExecutionEngineType::Live)
+            && !self
+                .security_validator
+                .validate_sensitive_command(user_id, "mode_live", confirmation_code)
+        {
+            warn!("Live execution mode rejected for user {} due to security validation", user_id);
+            return Ok(());
         }
         
         // Send set mode command to execution engine
-        if let Some(tx) = &self.execution_engine_tx {
-            let _ = tx.send(ExecutionEngineCommand::SetMode(mode));
-            info!("Set mode command sent to execution engine: {:?}", mode);
-        }
+        self.send_to_execution_engine(
+            ExecutionEngineCommand::SetMode(mode),
+            &format!("Execution mode {:?}", mode),
+        );
         
         Ok(())
+    }
+    
+    /// Forward a command to the risk manager.
+    ///
+    /// Failures are reported rather than swallowed: `let _ = tx.send(..)` made an
+    /// unwired channel indistinguishable from a delivered `HaltSystem`, i.e. the bot
+    /// kept trading while the operator believed it had been stopped.
+    fn send_to_risk_manager(&self, command: RiskManagementCommand, description: &str) {
+        match &self.risk_manager_tx {
+            Some(tx) => {
+                if let Err(e) = tx.send(command) {
+                    error!("{} was not delivered to the risk manager: {}", description, e);
+                } else {
+                    info!("{} sent to risk manager", description);
+                }
+            }
+            None => error!("{} dropped: no risk manager channel is wired", description),
+        }
+    }
+    
+    /// Forward a command to the execution engine (see [`Self::send_to_risk_manager`]
+    /// for why the result is never discarded).
+    fn send_to_execution_engine(&self, command: ExecutionEngineCommand, description: &str) {
+        match &self.execution_engine_tx {
+            Some(tx) => {
+                if let Err(e) = tx.send(command) {
+                    error!("{} was not delivered to the execution engine: {}", description, e);
+                } else {
+                    info!("{} sent to execution engine", description);
+                }
+            }
+            None => error!("{} dropped: no execution engine channel is wired", description),
+        }
     }
     
     /// Generate daily confirmation code

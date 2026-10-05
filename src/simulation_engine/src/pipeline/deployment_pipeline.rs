@@ -2,7 +2,7 @@
 
 use crate::core::SimulationError;
 use crate::infrastructure::{CiCdPipeline, DeploymentManager, AwsInfrastructure, DockerContainer};
-use tracing::{info, debug, warn, error};
+use tracing::{error, info};
 
 /// Complete deployment pipeline
 pub struct DeploymentPipeline {

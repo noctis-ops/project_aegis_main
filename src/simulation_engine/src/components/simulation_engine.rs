@@ -1,22 +1,16 @@
 //! Main Simulation Engine implementation
 
-use crate::core::{SimulationConfig, BacktestReport, SimulationError};
+use crate::core::{BacktestReport, SimulationConfig, SimulationError, TradeIntent};
 use crate::components::{
-    DataLake, 
-    BacktestingEngine, 
-    ExecutionSimulator, 
+    BacktestingEngine,
     CapitalAdapter,
-    LiveExecutionEngine,
-    ShadowExecutionEngine,
+    DataLake,
     ExecutionEngine,
     ExecutionEngineType,
-    TelegramC2Bot,
-    CommandProcessor,
-    NotificationService
+    ExecutionSimulator,
+    ShadowExecutionEngine,
 };
-use tracing::{info, warn, error, debug};
-use std::sync::Arc;
-use tokio::sync::mpsc;
+use tracing::{error, info};
 
 /// Main Simulation Engine
 pub struct SimulationEngine {
@@ -26,9 +20,6 @@ pub struct SimulationEngine {
     execution_simulator: ExecutionSimulator,
     capital_adapter: CapitalAdapter,
     execution_engine: Box<dyn ExecutionEngine>,
-    telegram_bot: Option<TelegramC2Bot>,
-    command_processor: Option<CommandProcessor>,
-    notification_service: Option<NotificationService>,
 }
 
 impl SimulationEngine {
@@ -54,10 +45,32 @@ impl SimulationEngine {
             execution_simulator: ExecutionSimulator::new(),
             capital_adapter: CapitalAdapter::new(),
             execution_engine: Box::new(shadow_engine),
-            telegram_bot: None,
-            command_processor: None,
-            notification_service: None,
         }
+    }
+    
+    /// Replace the execution backend.
+    ///
+    /// This is the seam a live [`crate::components::LiveExecutionEngine`] (or the
+    /// Telegram `/mode` command, once it is wired) is armed through. It is
+    /// deliberately never called from `new()`: a live backend submits real orders,
+    /// so switching to it has to be an explicit action.
+    pub fn set_execution_engine(&mut self, execution_engine: Box<dyn ExecutionEngine>) {
+        info!(
+            "Execution backend switched from {:?} to {:?}",
+            self.execution_engine.engine_type(),
+            execution_engine.engine_type()
+        );
+        self.execution_engine = execution_engine;
+    }
+    
+    /// The execution backend currently armed (shadow unless a live engine was set).
+    pub fn execution_mode(&self) -> ExecutionEngineType {
+        self.execution_engine.engine_type()
+    }
+    
+    /// Route a trade intent through the active execution backend.
+    pub async fn execute_trade(&self, intent: TradeIntent) -> Result<(), SimulationError> {
+        self.execution_engine.execute_trade(intent).await
     }
     
     /// Start the simulation engine
@@ -174,15 +187,17 @@ impl SimulationEngine {
             config.leverage = test_case.leverage;
             
             let report = self.run_backtest(config).await?;
-            reports.push(report);
             
-            // Check if this test case passed
+            // Validate while `report` is still owned, then keep it for the return
+            // value: pushing first and reading afterwards was a use-after-move.
             if !self.capital_adapter.validate_test_result(&report, &test_case) {
                 error!("Capital adaptation test failed for capital=${:.2}", test_case.capital);
                 return Err(SimulationError::CapitalAdaptationFailed(
                     format!("Test failed for capital=${:.2}", test_case.capital)
                 ));
             }
+            
+            reports.push(report);
         }
         
         info!("All capital adaptation tests passed");

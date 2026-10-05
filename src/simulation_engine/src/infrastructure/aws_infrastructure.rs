@@ -1,7 +1,7 @@
 //! AWS Infrastructure management
 
 use crate::core::SimulationError;
-use tracing::{info, debug, warn, error};
+use tracing::{error, info};
 
 /// AWS Infrastructure manager
 pub struct AwsInfrastructure {
@@ -24,7 +24,13 @@ impl AwsInfrastructure {
     
     /// Provision AWS infrastructure
     pub fn provision_infrastructure(&mut self) -> Result<(), SimulationError> {
-        info!("Provisioning AWS infrastructure in region: {}", self.region);
+        info!(
+            "Provisioning AWS infrastructure in region: {} - {} with {} security group(s): {}",
+            self.region,
+            self.instance_type,
+            self.security_groups.len(),
+            self.security_groups.join(", ")
+        );
         
         // In a real implementation, this would:
         // 1. Create EC2 instance with specified type
@@ -42,7 +48,7 @@ impl AwsInfrastructure {
     
     /// Configure security settings
     pub fn configure_security(&self) -> Result<(), SimulationError> {
-        info!("Configuring security settings...");
+        info!("Configuring security settings for: {}", self.security_groups.join(", "));
         
         // In a real implementation, this would:
         // 1. Set up IP whitelisting for Binance API
@@ -72,13 +78,27 @@ impl AwsInfrastructure {
     pub fn validate_configuration(&self) -> Result<bool, SimulationError> {
         info!("Validating infrastructure configuration...");
         
-        // In a real implementation, this would:
+        // The recorded shape of the deployment is part of what has to be valid: an
+        // instance type or a security group that was never set cannot be repaired by
+        // provisioning, and reporting `Ok(true)` for it would send an operator after
+        // a host that is either unreachable or wide open.
+        if self.instance_type.trim().is_empty() {
+            error!("Infrastructure configuration is INVALID: no EC2 instance type set");
+            return Ok(false);
+        }
+
+        if self.security_groups.is_empty() {
+            error!("Infrastructure configuration is INVALID: no security groups set");
+            return Ok(false);
+        }
+        
+        // In a real implementation, this would also:
         // 1. Verify instance is running
         // 2. Check network connectivity
         // 3. Verify security group settings
         // 4. Validate IAM permissions
         
-        // For now, we'll simulate successful validation
+        // For now, the rest is simulated as successful validation
         let is_valid = self.is_provisioned;
         
         if is_valid {

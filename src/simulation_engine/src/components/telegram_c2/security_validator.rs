@@ -1,6 +1,6 @@
 //! Security validator for Telegram C2 commands
 
-use tracing::{info, debug, warn, error};
+use tracing::{error, info, warn};
 use std::collections::HashMap;
 
 /// Security validator for C2 commands

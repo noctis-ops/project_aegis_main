@@ -24,6 +24,15 @@ impl ValidationPipeline {
     
     /// Configure validation parameters
     pub fn configure(&mut self, params: RobustnessTestParams) -> Result<(), SimulationError> {
+        // `run_robustness_tests` divides the range by `test_points`, so a zero here
+        // is not just a divide-by-zero: the sweep would silently run no test at all
+        // and still report an empty - but successful - robustness result.
+        if params.test_points == 0 {
+            return Err(SimulationError::InvalidConfig(
+                "Robustness testing needs at least one test point".to_string(),
+            ));
+        }
+
         self.robustness_params = params;
         self.is_configured = true;
         
@@ -46,18 +55,28 @@ impl ValidationPipeline {
         // For each parameter range, test variations
         for (param_name, min_val, max_val) in &self.robustness_params.parameter_ranges {
             info!("Testing robustness for parameter: {}", param_name);
+            warn!(
+                "'{}' is a strategy parameter and SimulationConfig only carries the simulation \
+                 harness (capital, leverage, playback speed): every test point below re-runs the \
+                 base config, so these reports are not a robustness measurement yet",
+                param_name
+            );
             
             // Test at multiple points within range
             let step = (max_val - min_val) / self.robustness_params.test_points as f64;
             
             for i in 0..self.robustness_params.test_points {
                 let test_value = min_val + (i as f64 * step);
+                debug!(
+                    "Test point {}/{} for '{}': {:.6}",
+                    i + 1,
+                    self.robustness_params.test_points,
+                    param_name,
+                    test_value
+                );
                 
                 // Create modified config with test parameter
-                let mut test_config = base_config.clone();
-                
-                // In a real implementation, we would modify the specific parameter
-                // For now, we'll just run a mock backtest
+                let test_config = base_config.clone();
                 
                 // Run backtest with modified parameters
                 let report = self.run_mock_backtest(&test_config).await?;
@@ -70,7 +89,7 @@ impl ValidationPipeline {
     }
     
     /// Run overfitting detection tests
-    pub async fn run_overfitting_detection(&self, optimal_config: &SimulationConfig) -> Result<bool, SimulationError> {
+    pub async fn run_overfitting_detection(&self, _optimal_config: &SimulationConfig) -> Result<bool, SimulationError> {
         info!("Running overfitting detection tests...");
         
         // Test parameters slightly away from optimal values

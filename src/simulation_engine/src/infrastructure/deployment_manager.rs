@@ -1,7 +1,7 @@
 //! Deployment Manager implementation
 
 use crate::core::SimulationError;
-use tracing::{info, debug, warn, error};
+use tracing::{error, info, warn};
 
 /// Deployment Manager for automated deployments
 pub struct DeploymentManager {
@@ -24,8 +24,18 @@ impl DeploymentManager {
     
     /// Deploy to AWS ECS
     pub fn deploy_to_ecs(&mut self) -> Result<(), SimulationError> {
-        info!("Deploying to AWS ECS...");
-        
+        // The image coordinates are what a deployment is identified by; refusing to
+        // run without them beats "simulating" a push that could not have happened.
+        if self.aws_ecr_repository.trim().is_empty() {
+            return Err(SimulationError::DeploymentError(
+                "No ECR repository configured for deployment".to_string(),
+            ));
+        }
+
+        info!(
+            "Deploying {}:{} to ECS cluster '{}'",
+            self.aws_ecr_repository, self.docker_image_tag, self.aws_ecs_cluster
+        );
         // In a real implementation, this would:
         // 1. Tag Docker image
         // 2. Push to AWS ECR

@@ -17,7 +17,11 @@ pub trait ExecutionEngine: Send + Sync {
 }
 
 /// Execution engine type enumeration
-#[derive(Debug, Clone, PartialEq)]
+///
+/// `Copy` because it is a fieldless mode tag: callers log the mode after
+/// handing it to a command channel, and cloning a two-variant tag around is
+/// busywork that hides the move. Matches `ExecutionMode` in Layer 3.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExecutionEngineType {
     Live,    // Connected to real exchange
     Shadow,  // Local simulation engine
@@ -41,6 +45,15 @@ impl LiveExecutionEngine {
     
     /// Initialize the live execution engine
     pub fn initialize(&mut self) -> Result<(), SimulationError> {
+        // The key is not used to sign anything yet - submitting an order is still a
+        // stub - but arming the live path without one can only ever fail against the
+        // exchange, so refuse to mark this engine ready with an empty key.
+        if self.api_key.trim().is_empty() {
+            return Err(SimulationError::ExecutionError(
+                "Live execution engine has no API key".to_string()
+            ));
+        }
+
         // In a real implementation, this would initialize Binance connections
         self.is_initialized = true;
         Ok(())

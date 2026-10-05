@@ -1,8 +1,7 @@
 //! Pessimistic Execution Simulator implementation
 
 use crate::core::{SimulationError, ExecutionSimParams};
-use tracing::{info, debug, warn, error};
-use std::sync::Arc;
+use tracing::{debug, info};
 
 /// Pessimistic Execution Simulator
 #[derive(Clone)]

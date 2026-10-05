@@ -1,7 +1,7 @@
 //! Docker container management
 
 use crate::core::SimulationError;
-use tracing::{info, debug, warn, error};
+use tracing::{error, info, warn};
 use std::process::Command;
 
 /// Docker container manager

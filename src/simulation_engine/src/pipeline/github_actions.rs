@@ -1,7 +1,7 @@
 //! GitHub Actions workflow definitions
 
 use crate::core::SimulationError;
-use tracing::{info, debug, warn, error};
+use tracing::{error, info};
 
 /// GitHub Actions workflow manager
 pub struct GithubActions {
@@ -24,7 +24,13 @@ impl GithubActions {
     
     /// Configure GitHub Actions workflows
     pub fn configure_workflows(&mut self) -> Result<(), SimulationError> {
-        info!("Configuring GitHub Actions workflows...");
+        if self.workflow_files.is_empty() {
+            return Err(SimulationError::PipelineError(
+                "No workflow files configured".to_string(),
+            ));
+        }
+
+        info!("Configuring GitHub Actions workflows: {}", self.workflow_files.join(", "));
         
         // In a real implementation, this would:
         // 1. Create workflow files

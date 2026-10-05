@@ -1,7 +1,7 @@
 //! Pessimistic Local Matching Engine for Shadow Trading
 
 use crate::core::{OrderBookSnapshot, TradeIntent, TradeSide, SimulationError};
-use tracing::{info, debug, warn, error};
+use tracing::{debug, info};
 use std::collections::HashMap;
 
 /// Pessimistic Local Matching Engine

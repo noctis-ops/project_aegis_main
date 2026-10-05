@@ -1,9 +1,7 @@
 //! Tick-Level Data Lake implementation
 
-use crate::core::{MarketEvent, SimulationConfig, SimulationError};
-use tracing::{info, debug, error};
-use std::sync::Arc;
-use tokio::sync::mpsc;
+use crate::core::{MarketEvent, SimulationError};
+use tracing::{error, info};
 
 /// Data Lake for tick-level market data
 #[derive(Clone)]
