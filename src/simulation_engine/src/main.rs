@@ -7,8 +7,8 @@
 //! twice - every error in it was reported twice, with different warnings per target
 //! - which is exactly what Layers 1 to 4 stopped doing.
 //!
-//! `start()` spawns the feeding and execution-simulation tasks and returns; the park
-//! loop below is what keeps those tasks (and the process) alive.
+//! `start()` checks the data lake, spawns the execution-simulation task and returns;
+//! the park loop below is what keeps that task (and the process) alive.
 
 use simulation_engine::SimulationEngine;
 use tracing::{info, error};

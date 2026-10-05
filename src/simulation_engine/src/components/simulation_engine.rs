@@ -25,14 +25,14 @@ pub struct SimulationEngine {
 impl SimulationEngine {
     /// Create a new Simulation Engine
     pub fn new() -> Self {
+        // The defaults live in one place (`SimulationConfig::default`), so the strategy
+        // knobs and fee schedule the replay needs cannot be missing from a constructed
+        // engine while present in a configured one.
         let config = SimulationConfig {
-            data_path: "./data".to_string(),
-            start_time: chrono::Utc::now(),
-            end_time: chrono::Utc::now(),
-            playback_speed: 1.0,
-            initial_capital: 10000.0,
+            initial_capital: 10_000.0,
             leverage: 10.0,
             symbols: vec!["BTCUSDT".to_string()],
+            ..SimulationConfig::default()
         };
         
         // Initialize with shadow execution engine by default
@@ -88,22 +88,12 @@ impl SimulationEngine {
     }
     
     /// Start background simulation tasks
+    ///
+    /// A second task used to call `DataLake::feed_data` every 10 ms. That was harmless
+    /// while the lake manufactured one event, and would be disk thrash plus duplicated
+    /// events now that it reads real files: ingestion is an explicit step
+    /// ([`SimulationEngine::ingest_lake_events`]), and a replay loads its own window.
     async fn start_simulation_tasks(&mut self) -> Result<(), SimulationError> {
-        // Start data feeding
-        let data_lake = self.data_lake.clone();
-        let backtesting_engine = self.backtesting_engine.clone();
-        
-        tokio::spawn(async move {
-            loop {
-                // Feed data to backtesting engine
-                if let Err(e) = data_lake.feed_data(&backtesting_engine).await {
-                    error!("Data feeding error: {}", e);
-                }
-                
-                tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-            }
-        });
-        
         // Start execution simulation
         let execution_simulator = self.execution_simulator.clone();
         let backtesting_engine = self.backtesting_engine.clone();
@@ -122,24 +112,44 @@ impl SimulationEngine {
         Ok(())
     }
     
-    /// Run a backtest
+    /// Run a backtest over the recorded data for this configuration.
+    ///
+    /// The events are loaded once and passed to the engine as a fixed sequence, so two
+    /// runs over the same directory and window produce the same report - the property
+    /// the deterministic path exists to give the strategy gates above it.
     pub async fn run_backtest(&mut self, config: SimulationConfig) -> Result<BacktestReport, SimulationError> {
         info!("Starting backtest simulation");
         
         // Validate configuration
         self.validate_config(&config)?;
         
-        // Set configuration
+        // The data is read before the configuration is adopted: a run that failed for
+        // want of data must not leave the engine reporting the window it never replayed.
+        self.data_lake.initialize(&config.data_path)?;
+        let events = self.data_lake.collect_events(&config)?;
         self.config = config.clone();
         
-        // Initialize data lake with new config
-        self.data_lake.initialize(&config.data_path)?;
+        let report = self.backtesting_engine.run_simulation(&config, &events).await?;
         
-        // Run the simulation
-        let report = self.backtesting_engine.run_simulation(&config).await?;
-        
-        info!("Backtest simulation completed successfully");
+        info!(
+            "Backtest replay measured {:+.2}% over {} fill(s), drawdown {:.2}%, execution quality {:.1}%",
+            report.results.total_return * 100.0,
+            report.results.total_trades,
+            report.results.max_drawdown * 100.0,
+            report.results.execution_quality * 100.0
+        );
         Ok(report)
+    }
+    
+    /// Push everything the lake holds into the run that is currently active.
+    ///
+    /// For a shadow run driven from outside a replay; a backtest does not need it,
+    /// because `run_backtest` loads its own window. Events that the active run rejects
+    /// (past its window, out of order) are counted out of the delivered total.
+    pub async fn ingest_lake_events(&self) -> Result<usize, SimulationError> {
+        let delivered = self.data_lake.feed_data(&self.backtesting_engine).await?;
+        info!("Ingested {} event(s) from the data lake", delivered);
+        Ok(delivered)
     }
     
     /// Validate simulation configuration
@@ -204,15 +214,50 @@ impl SimulationEngine {
         Ok(reports)
     }
     
-    /// Run robustness tests
+    /// Run robustness tests by perturbing one strategy parameter at a time.
+    ///
+    /// One knob at a time is the point: a configuration that only works when several
+    /// parameters move together is not robust, it is fitted to a single grid point.
+    /// Every variant replays the *same* events, so the spread across the reports is
+    /// attributable to the parameter rather than to the feed.
     pub async fn run_robustness_tests(&mut self) -> Result<Vec<BacktestReport>, SimulationError> {
         info!("Running robustness tests");
         
-        // In a real implementation, this would vary strategy parameters
-        // and test performance sensitivity
-        let reports = Vec::new();
+        let params = self.capital_adapter.generate_robustness_params();
+        if params.parameter_ranges.is_empty() || params.test_points == 0 {
+            return Err(SimulationError::InvalidConfig(
+                "Robustness testing needs at least one parameter range and one test point".to_string(),
+            ));
+        }
         
-        info!("Robustness tests completed");
+        self.data_lake.initialize(&self.config.data_path)?;
+        let events = self.data_lake.collect_events(&self.config)?;
+        
+        let mut reports = Vec::new();
+        for (name, min_value, max_value) in &params.parameter_ranges {
+            let step = (max_value - min_value) / params.test_points as f64;
+            
+            for index in 0..params.test_points {
+                let mut config = self.config.clone();
+                // One table of swept names, shared with the validation pipeline
+                // (`StrategyParams::set_knob`), so the two cannot disagree about what
+                // the simulation is able to apply.
+                config.strategy.set_knob(name, min_value + index as f64 * step)?;
+                reports.push(self.backtesting_engine.run_simulation(&config, &events).await?);
+            }
+        }
+        
+        // The gate is called, not just defined: an empty or decorative sweep is what
+        // this function used to be.
+        if !self.capital_adapter.validate_robustness_results(&reports) {
+            return Err(SimulationError::RobustnessTestFailed(format!(
+                "{} replay(s) across the swept ranges did not hold up together",
+                reports.len()
+            )));
+        }
+        
+        info!("Robustness tests completed with {} test cases", reports.len());
         Ok(reports)
     }
+    
 }

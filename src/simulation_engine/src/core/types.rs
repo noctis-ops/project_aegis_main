@@ -1,18 +1,145 @@
 //! Core data types for the Simulation Engine
 
-use serde::{Deserialize, Serialize};
+use crate::core::SimulationError;
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 
 /// Simulation configuration
 #[derive(Debug, Clone)]
 pub struct SimulationConfig {
+    /// Where recorded events live (see `components::data_lake` for the accepted files).
     pub data_path: String,
     pub start_time: DateTime<Utc>,
     pub end_time: DateTime<Utc>,
+    /// Validated pacing setting for an *external* feeder pushing events into an active
+    /// run. The replay itself ignores it on purpose: a backtest consumes a fixed event
+    /// sequence as fast as it can, and determinism - not wall-clock fidelity - is what
+    /// makes two runs over the same files comparable.
     pub playback_speed: f64,
     pub initial_capital: f64,
     pub leverage: f64,
     pub symbols: Vec<String>,
+    /// The strategy the simulated path trades. Part of the config, not a global,
+    /// because a backtest is only reproducible if the rule it tested is recorded
+    /// with it (and because the robustness sweep perturbs exactly these values).
+    pub strategy: StrategyParams,
+    /// Fee the simulation charges per fill. Binance USDⓈ-M futures quotes 0.02%
+    /// maker / 0.04% taker; entries queue as makers and stop/target exits cross, so
+    /// both rates matter and neither may be left out.
+    pub maker_fee_rate: f64,
+    pub taker_fee_rate: f64,
+}
+
+impl Default for SimulationConfig {
+    fn default() -> Self {
+        Self {
+            data_path: "./data".to_string(),
+            start_time: chrono::Utc::now(),
+            end_time: chrono::Utc::now(),
+            playback_speed: crate::core::constants::DEFAULT_PLAYBACK_SPEED,
+            initial_capital: 10000.0,
+            leverage: 10.0,
+            symbols: vec!["BTCUSDT".to_string()],
+            strategy: StrategyParams::default(),
+            maker_fee_rate: crate::core::constants::DEFAULT_MAKER_FEE_RATE,
+            taker_fee_rate: crate::core::constants::DEFAULT_TAKER_FEE_RATE,
+        }
+    }
+}
+
+/// Strategy knobs the simulated path trades on.
+///
+/// The decision rule and these defaults mirror Layer 2
+/// (`alpha_engine::logic::signal_generator` / `position_sizing`) on purpose: a
+/// backtest of a *different* rule than the one that trades live tells you nothing
+/// about your live PnL. Keeping them here (rather than importing Layer 2) is what
+/// lets a robustness run perturb them one at a time.
+#[derive(Debug, Clone)]
+pub struct StrategyParams {
+    /// |OBI| required to act. Layer 2 uses 0.4.
+    pub obi_threshold: f64,
+    /// Top-of-book levels in the imbalance ratio. Layer 2 uses 5.
+    pub obi_levels: usize,
+    /// Share of equity risked between entry and stop. Layer 2 uses 0.01.
+    pub risk_percentage: f64,
+    /// Trade prints sampled to estimate realized volatility.
+    pub volatility_window: usize,
+    /// Refuse new entries while sampled volatility exceeds this (0 disables the gate).
+    pub max_volatility: f64,
+    /// Quantity step the exchange accepts (BTCUSDT: 0.001).
+    pub size_step: f64,
+    /// Absolute cap on position notional, as Layer 2 caps it.
+    pub max_position_value: f64,
+}
+
+impl Default for StrategyParams {
+    fn default() -> Self {
+        Self {
+            obi_threshold: 0.4,
+            obi_levels: 5,
+            risk_percentage: 0.01,
+            volatility_window: 100,
+            max_volatility: 0.0,
+            size_step: 0.001,
+            max_position_value: 10000.0,
+        }
+    }
+}
+
+impl StrategyParams {
+    /// The knobs a robustness or overfitting sweep may name.
+    pub const SWEPT_KNOBS: &'static [&'static str] = &[
+        "obi_threshold",
+        "obi_levels",
+        "volatility_window",
+        "risk_percentage",
+        "max_position_value",
+        "size_step",
+    ];
+
+    /// Read a knob by name, for tests that need the current value to perturb around it.
+    pub fn knob(&self, name: &str) -> Option<f64> {
+        let value = match name {
+            "obi_threshold" => self.obi_threshold,
+            "obi_levels" => self.obi_levels as f64,
+            "volatility_window" => self.volatility_window as f64,
+            "risk_percentage" => self.risk_percentage,
+            "max_volatility" => self.max_volatility,
+            "max_position_value" => self.max_position_value,
+            "size_step" => self.size_step,
+            _ => return None,
+        };
+        Some(value)
+    }
+
+    /// Write a knob by name.
+    ///
+    /// Unknown names are an error, not a warning to be logged and ignored: re-running
+    /// the unchanged config and counting it as a test point is how a sweep reports a
+    /// pass it never measured. Note `max_volatility` is readable but not listed as
+    /// sweepable: it is a gate, and sweeping a gate that defaults to "disabled" only
+    /// produces identical runs.
+    pub fn set_knob(&mut self, name: &str, value: f64) -> Result<(), SimulationError> {
+        match name {
+            "obi_threshold" => self.obi_threshold = value,
+            // Count-valued knobs are rounded up to at least one: a zero-level OBI or a
+            // zero-sample volatility window is not a parameter, it is a division by
+            // nothing.
+            "obi_levels" => self.obi_levels = value.max(1.0).round() as usize,
+            "volatility_window" => self.volatility_window = value.max(1.0).round() as usize,
+            "risk_percentage" => self.risk_percentage = value,
+            "max_position_value" => self.max_position_value = value,
+            "size_step" => self.size_step = value,
+            other => {
+                return Err(SimulationError::InvalidConfig(format!(
+                    "The simulation applies no strategy parameter named '{}'; sweep one of {}",
+                    other,
+                    Self::SWEPT_KNOBS.join(", ")
+                )))
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Market event types
@@ -70,7 +197,7 @@ pub enum TradeSide {
 /// trade printed by the market in the replay feed and carries no client size,
 /// no stop-loss and no time-to-live, so it cannot drive queue-position or PnL
 /// math.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TradeIntent {
     pub symbol: String,
     pub side: TradeSide,

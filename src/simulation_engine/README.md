@@ -30,6 +30,23 @@ For Hyper-Scalping testing, we need microsecond-accurate historical data.
 
 **Data Feeder:** Software unit that reads Parquet files and injects messages into Tokio channels (same channels as Layer 1) with controlled injection speed (Playback Speed).
 
+**Data Requirement (as of the real replay):** every gate that reports backtest numbers -
+`SimulationEngine::run_backtest`, the robustness and overfitting sweeps, and the CI smoke test -
+reads recorded events from `data_path` (default `./data`, relative to the working directory).
+Accepted files are `*.parquet`, `*.jsonl` and `*.json`; a row is either a serialized `MarketEvent`
+(`{"Trade": {...}}`) or a flat record:
+
+| row | fields |
+|-----|--------|
+| order book snapshot | `symbol`, `timestamp`, and `bids`/`asks` (an array of `{price, quantity}`) or the paired columns `bid_price_0`, `bid_qty_0`, `ask_price_0`, `ask_qty_0`, ... |
+| trade | `symbol`, `timestamp`, `price`, `quantity`, and `side` (`"buy"`/`"sell"`) or `is_buyer_maker` |
+| funding | `symbol`, `timestamp`, `funding_rate` (or `rate`) |
+
+Timestamps are epoch **milliseconds** (or an RFC 3339 string). If the lake holds no files - or no
+rows inside the requested window - the run fails with a `Data loading error` instead of reporting
+numbers. That is deliberate: this layer used to manufacture two events dated 2022-01-01 and a fixed
+"12% return / 800 trades" report, which made every gate above it unable to say no.
+
 ### 5.2. Event-Driven Backtesting Engine
 **Engineering Design:** Engine operates as a central Event Loop. Receives MarketEvent from Data Feeder, passes it to Layer 2 (Alpha), then receives TradeIntent and passes it to Execution Simulator.
 

@@ -201,6 +201,14 @@ impl PessimisticMatchingEngine {
         self.virtual_orders.get(order_id).map(|o| &o.status)
     }
     
+    /// The order behind an id, so a caller can act on a fill.
+    ///
+    /// `process_tick_data` reports which orders filled; booking the trade needs the
+    /// intent (size, side, protection levels) that the id was created from.
+    pub fn get_virtual_order(&self, order_id: &str) -> Option<&VirtualOrder> {
+        self.virtual_orders.get(order_id)
+    }
+    
     /// Check if engine is initialized
     pub fn is_initialized(&self) -> bool {
         self.is_initialized

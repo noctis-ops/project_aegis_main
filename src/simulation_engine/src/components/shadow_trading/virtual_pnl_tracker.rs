@@ -14,6 +14,11 @@ pub struct VirtualPnlTracker {
     trades: Vec<ExecutedTrade>,
     /// Gross PnL booked by fills that closed open lots; see [`Self::get_realized_pnl`].
     realized_gross_pnl: f64,
+    /// One entry per closed lot: the gross round trip, and how long it was held.
+    /// Win rate, profit factor and average duration are all defined on these, not
+    /// on fills - a partially closed lot is not a completed trade.
+    closed_leg_pnls: Vec<f64>,
+    closed_leg_durations_ms: Vec<f64>,
     maker_fee_rate: f64,
     taker_fee_rate: f64,
     is_initialized: bool,
@@ -55,6 +60,8 @@ impl VirtualPnlTracker {
             positions: Vec::new(),
             trades: Vec::new(),
             realized_gross_pnl: 0.0,
+            closed_leg_pnls: Vec::new(),
+            closed_leg_durations_ms: Vec::new(),
             maker_fee_rate: 0.0002, // 0.02% maker fee
             taker_fee_rate: 0.0004, // 0.04% taker fee
             is_initialized: false,
@@ -179,10 +186,14 @@ impl VirtualPnlTracker {
 
             // Buying covers a short (profit when the entry was above the exit),
             // selling disposes of a long (profit when the exit is above the entry).
-            self.realized_gross_pnl += match side {
+            let leg_pnl = match side {
                 TradeSide::Buy => (lot.entry_price - price) * closed,
                 TradeSide::Sell => (price - lot.entry_price) * closed,
             };
+            self.realized_gross_pnl += leg_pnl;
+            self.closed_leg_pnls.push(leg_pnl);
+            self.closed_leg_durations_ms
+                .push(timestamp.saturating_sub(lot.entry_timestamp) as f64);
         }
 
         // Lots closed to nothing are gone, so `positions` only ever holds exposure
@@ -251,6 +262,18 @@ impl VirtualPnlTracker {
         self.realized_gross_pnl - fees
     }
     
+    /// Gross PnL of every closed lot, one entry per round trip (fees excluded: the
+    /// fee bill is per fill and is netted in [`Self::get_realized_pnl`]).
+    pub fn get_closed_leg_pnls(&self) -> &[f64] {
+        &self.closed_leg_pnls
+    }
+    
+    /// How long each closed lot was held, in milliseconds, in the same order as
+    /// [`Self::get_closed_leg_pnls`].
+    pub fn get_closed_leg_durations_ms(&self) -> &[f64] {
+        &self.closed_leg_durations_ms
+    }
+    
     /// Get open positions (lots that have not been closed out)
     pub fn get_positions(&self) -> &[Position] {
         &self.positions
@@ -315,6 +338,8 @@ mod tests {
             .unwrap();
 
         assert_eq!(tracker.get_realized_pnl(), 10.0);
+        assert_eq!(tracker.get_closed_leg_pnls(), &[10.0]);
+        assert_eq!(tracker.get_closed_leg_durations_ms(), &[0.0]);
         assert!(tracker.get_positions().is_empty(), "closed lots must not stay open");
         assert_eq!(tracker.get_exposure_by_symbol("BTCUSDT"), 0.0);
     }
@@ -383,7 +408,8 @@ mod tests {
             .record_trade_execution(&intent(TradeSide::Sell, 130.0, 2.0), 130.0, true)
             .unwrap();
 
-        // FIFO: 30 on the 100 lot, 10 on the 120 lot.
+        // FIFO: 30 on the 100 lot, 10 on the 120 lot, in that order.
+        assert_eq!(tracker.get_closed_leg_pnls(), &[30.0, 10.0]);
         assert_eq!(tracker.get_realized_pnl(), 40.0);
         assert!(tracker.get_positions().is_empty());
     }
