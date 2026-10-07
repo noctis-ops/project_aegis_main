@@ -8,5 +8,10 @@ secrets/
 *.pem
 target/
 node_modules/
+# Recordings for the Layer 5 data lake and the reports a run writes next to them.
+# Untracked on purpose: a captured tape is gigabytes of market data, and a committed
+# fixture would become the thing the gates are scored against.
+/data/
+/runs/
 *.log
 .next/
