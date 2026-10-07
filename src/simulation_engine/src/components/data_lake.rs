@@ -490,14 +490,21 @@ impl EventRow {
             .map(|kind| kind.trim().to_ascii_lowercase())
             .unwrap_or_default();
 
-        if kind == "funding" || (kind.is_empty() && self.funding_rate.is_some()) {
-            let rate = number(
-                self.funding_rate
-                    .as_ref()
-                    .or_else(|| self.extra.get("rate")),
-                &symbol,
-                "funding_rate",
-            )?;
+        // Two column names carry the same number: `funding_rate` in the dumps this crate
+        // writes, `rate` in the venue's own funding stream. Detection has to accept both,
+        // or an untagged `rate` row walks into the trade branch and is lost to a
+        // "no price" error - a funding charge silently missing from the replay.
+        let rate_column = self
+            .funding_rate
+            .as_ref()
+            .map(|value| ("funding_rate", value))
+            .or_else(|| self.extra.get("rate").map(|value| ("rate", value)));
+
+        if kind == "funding" || (kind.is_empty() && rate_column.is_some()) {
+            let (column, value) = rate_column.ok_or_else(|| {
+                format!("{}: a row tagged as funding carries no rate column", symbol)
+            })?;
+            let rate = number(Some(value), &symbol, column)?;
             return Ok(MarketEvent::FundingRate(FundingRateEvent {
                 symbol,
                 timestamp,

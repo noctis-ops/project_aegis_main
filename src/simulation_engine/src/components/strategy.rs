@@ -452,9 +452,29 @@ mod tests {
         // which is 20_000 notional - capped at max_position_value (10_000) = 0.25.
         let sized = strat.size_position(10_000.0, 10.0, 40_000.0, 39_800.0);
         assert!((sized - 0.25).abs() < 1e-12, "expected 0.25 BTC, got {}", sized);
-        // A 100-capital account cannot even reach the exchange minimum, so it is
-        // rejected rather than "sized up" to a position the executor would refuse.
-        assert_eq!(strat.size_position(100.0, 10.0, 40_000.0, 39_800.0), 0.0);
+
+        // A thin account still sizes, and that is correct: 1% of 100 over a 200-point
+        // stop is 0.005 BTC, 200 USDT of notional, which clears the venue's 5 USDT floor
+        // with room to spare. Note the floor can never bind at this price - one step of
+        // 0.001 BTC is 40 USDT - so the rejection below is deliberately probed on a cheap
+        // symbol, where a step is 0.1 USDT and the minimum becomes the live constraint.
+        let thin = strat.size_position(100.0, 10.0, 40_000.0, 39_800.0);
+        assert!(
+            (thin - 0.005).abs() < 1e-12,
+            "a small account sizes to 0.005 BTC, not to zero: got {}",
+            thin
+        );
+
+        // Here the floor does bind: 1% of 1 over a 0.5-point stop is 0.02 = 2 USDT, and
+        // an order the exchange would reject is refused rather than booked.
+        assert_eq!(strat.size_position(1.0, 10.0, 100.0, 99.5), 0.0);
+        // The same symbol at a workable size passes the floor untouched.
+        let cheap = strat.size_position(100.0, 10.0, 100.0, 99.5);
+        assert!(
+            (cheap - 2.0).abs() < 1e-12,
+            "2.0 units at 100 is 200 USDT, above the floor: got {}",
+            cheap
+        );
     }
 
     #[test]
