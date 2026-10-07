@@ -5,7 +5,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 /// Simulation configuration
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SimulationConfig {
     /// Where recorded events live (see `components::data_lake` for the accepted files).
     pub data_path: String,
@@ -29,6 +29,39 @@ pub struct SimulationConfig {
     pub maker_fee_rate: f64,
     pub taker_fee_rate: f64,
 }
+
+impl SimulationConfig {
+    /// Replay everything the data lake holds.
+    ///
+    /// `default()` sets `start_time == end_time == Utc::now()`, which is the right shape
+    /// for a test that overwrites both and a broken shape for a launcher that does not:
+    /// a zero-length window silently selects no events, and the replay would then report
+    /// "no events in window" about data that is sitting on disk. So a run without an
+    /// explicit window spans the range the reader accepts - from `MIN_EPOCH_MILLIS` (the
+    /// sanity floor that separates milliseconds from seconds) to the year 2100, which is
+    /// the far future the lake's own tests use and still inside chrono's range.
+    pub fn whole_lake(data_path: impl Into<String>) -> Self {
+        // `TimeZone` supplies `timestamp_millis_opt`; `Utc` is already imported above.
+        use chrono::TimeZone;
+
+        let to_millis = |value: i64, constant: &str| {
+            Utc.timestamp_millis_opt(value)
+                .single()
+                .unwrap_or_else(|| panic!("{} is outside chrono's timestamp range", constant))
+        };
+
+        Self {
+            data_path: data_path.into(),
+            start_time: to_millis(crate::core::constants::MIN_EPOCH_MILLIS, "MIN_EPOCH_MILLIS"),
+            end_time: to_millis(FAR_FUTURE_MILLIS, "FAR_FUTURE_MILLIS"),
+            ..Self::default()
+        }
+    }
+}
+
+/// The end of the window `SimulationConfig::whole_lake` uses: far enough to be "no upper
+/// bound" inside chrono's range, and the same year 2100 the data lake tests assume.
+const FAR_FUTURE_MILLIS: i64 = 4_102_444_800_000;
 
 impl Default for SimulationConfig {
     fn default() -> Self {
@@ -54,7 +87,7 @@ impl Default for SimulationConfig {
 /// backtest of a *different* rule than the one that trades live tells you nothing
 /// about your live PnL. Keeping them here (rather than importing Layer 2) is what
 /// lets a robustness run perturb them one at a time.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StrategyParams {
     /// |OBI| required to act. Layer 2 uses 0.4.
     pub obi_threshold: f64,
@@ -221,7 +254,7 @@ pub struct FundingRateEvent {
 }
 
 /// Simulation result
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SimulationResult {
     pub total_return: f64,
     pub sharpe_ratio: f64,
@@ -235,7 +268,7 @@ pub struct SimulationResult {
 }
 
 /// Backtest report
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BacktestReport {
     pub config: SimulationConfig,
     pub results: SimulationResult,
@@ -245,7 +278,7 @@ pub struct BacktestReport {
 }
 
 /// Trade log entry
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TradeLogEntry {
     pub timestamp: i64,
     pub symbol: String,

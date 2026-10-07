@@ -47,6 +47,39 @@ rows inside the requested window - the run fails with a `Data loading error` ins
 numbers. That is deliberate: this layer used to manufacture two events dated 2022-01-01 and a fixed
 "12% return / 800 trades" report, which made every gate above it unable to say no.
 
+**Recording data (`tools/record_live_ws.mjs`)**
+
+The archives on `data.binance.vision` cannot drive this layer: `bookDepth` there is a
+percentage-band notional aggregate with no price levels at all, and `bookTicker` was best
+bid/ask only, discontinued after 2024-03-30. A replay needs L2 levels because entries are
+decided by order-book imbalance and filled off the queue waiting at the best bid, so the
+recorder captures the live partial-book stream instead (Node 22 or newer, nothing to install):
+
+```powershell
+node src\simulation_engine\tools\record_live_ws.mjs --data .\data --minutes 30
+```
+
+It writes `events-<UTC>.jsonl` in the shapes of the table above, rotating every ten minutes,
+and counts the rows it refused (timestamps outside milliseconds, a book with an empty side)
+instead of writing them.
+
+**Running a measurement (`cargo run --release -- <args>`)**
+
+| mode | what it does |
+|------|--------------|
+| `--backtest` | replays the lake over the window and prints what the replay measured (default) |
+| `--robustness` | the reference replay first, then each swept knob one step at a time |
+| `--capital-matrix` | the capital/leverage matrix over the same window |
+| `--serve` | starts the engine tasks and stays alive for an external feeder (Layers 1-4 or the C2); nothing is measured |
+
+Every option has an `AEGIS_*` environment equivalent, listed by `--help`. The window defaults
+to the whole lake, so `--start`/`--end` are only needed to scope a run, and `--report run.json`
+writes the same figures the console shows. The exit code is the verdict: non-zero means no
+measurement happened, which is what makes a mode usable from a scheduled task or from CI.
+
+The binary can only request the shadow ledger. Arming a live backend stays an explicit act in
+code, and `/mode live` on the Telegram C2 still requires a single-use code.
+
 ### 5.2. Event-Driven Backtesting Engine
 **Engineering Design:** Engine operates as a central Event Loop. Receives MarketEvent from Data Feeder, passes it to Layer 2 (Alpha), then receives TradeIntent and passes it to Execution Simulator.
 
