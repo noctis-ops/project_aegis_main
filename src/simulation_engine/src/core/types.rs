@@ -291,7 +291,11 @@ pub struct TradeLogEntry {
 }
 
 /// Trade action enumeration
-#[derive(Debug, Clone)]
+///
+/// `Serialize`/`Deserialize` because a `TradeLogEntry` carries one, and `TradeLogEntry`
+/// is inside `BacktestReport` - which the launcher writes to `--report <FILE.json>`. A
+/// derive needs every field type to derive as well, so the leaf enums are not optional.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum TradeAction {
     Entry,
     Exit,
