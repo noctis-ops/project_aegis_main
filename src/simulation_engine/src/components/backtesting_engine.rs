@@ -18,8 +18,9 @@ use crate::components::strategy::{
     EntryDecision, ExitReason, ObiSimStrategy, Rejection, TriggeredExit,
 };
 use crate::core::{
-    BacktestReport, FundingRateEvent, MarketEvent, OrderBookSnapshot, SimulationConfig,
-    SimulationError, SimulationResult, TradeAction, TradeEvent, TradeIntent, TradeLogEntry,
+    BacktestReport, FundingRateEvent, MarketEvent, OrderBookSnapshot, ReplayCensus,
+    SimulationConfig, SimulationError, SimulationResult, TradeAction, TradeEvent, TradeIntent,
+    TradeLogEntry,
 };
 use crate::core::constants::SECONDS_PER_YEAR;
 use chrono::Utc;
@@ -50,6 +51,9 @@ struct RunState {
     events: usize,
     snapshots: usize,
     skipped_before_window: usize,
+    trade_prints: usize,
+    funding_prints: usize,
+    first_event_ms: i64,
     submitted: usize,
     filled: usize,
     expired: usize,
@@ -92,6 +96,9 @@ impl RunState {
             events: 0,
             snapshots: 0,
             skipped_before_window: 0,
+            trade_prints: 0,
+            funding_prints: 0,
+            first_event_ms: 0,
             submitted: 0,
             filled: 0,
             expired: 0,
@@ -134,11 +141,23 @@ impl RunState {
 
         self.current_time = event_time;
         self.events += 1;
+        if self.first_event_ms == 0 {
+            self.first_event_ms = event_time;
+        }
 
+        // Counted per kind here, rather than inside each handler: `on_book` also runs for a
+        // snapshot that the strategy ignores, and the census is about what the replay was
+        // handed, not about what it liked.
         match event {
             MarketEvent::OrderBookSnapshot(snapshot) => self.on_book(snapshot),
-            MarketEvent::Trade(trade) => self.on_trade(trade),
-            MarketEvent::FundingRate(funding) => self.on_funding(funding),
+            MarketEvent::Trade(trade) => {
+                self.trade_prints += 1;
+                self.on_trade(trade)
+            }
+            MarketEvent::FundingRate(funding) => {
+                self.funding_prints += 1;
+                self.on_funding(funding)
+            }
         }
     }
 
@@ -403,9 +422,36 @@ impl RunState {
             );
         }
 
+        let mut rejected: Vec<(String, usize)> = self
+            .rejections
+            .iter()
+            .map(|(reason, count)| (format!("{:?}", reason), *count))
+            .collect();
+        rejected.sort();
+
+        let census = ReplayCensus {
+            events: self.events,
+            snapshots: self.snapshots,
+            trade_prints: self.trade_prints,
+            funding_prints: self.funding_prints,
+            orders_submitted: self.submitted,
+            orders_filled: self.filled,
+            orders_expired: self.expired,
+            skipped_before_window: self.skipped_before_window,
+            rejected,
+            funding_paid: self.funding_paid,
+            // The log is what the run booked; summing it beats keeping a parallel counter
+            // that could drift from the entries it is supposed to total.
+            fees_paid: self.trade_log.iter().map(|entry| entry.fees).sum(),
+            traded_notional: self.traded_notional,
+            first_event_ms: self.first_event_ms,
+            last_event_ms: self.current_time,
+        };
+
         BacktestReport {
             config: self.config,
             results,
+            census,
             equity_curve: self.equity_curve,
             trade_log: self.trade_log,
             timestamp: Utc::now(),
@@ -692,7 +738,7 @@ pub fn mean(values: &[f64]) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::{PriceLevel, TradeSide};
+    use crate::core::{BacktestReport, PriceLevel, TradeSide};
     use chrono::TimeZone;
 
     const T0: i64 = 1_640_995_200_000; // 2022-01-01 00:00:00 UTC
@@ -931,6 +977,65 @@ mod tests {
         assert_eq!(sharpe_ratio(&[(0, 100.0), (1_000, 100.0)]), 0.0);
         assert_eq!(sharpe_ratio(&[(0, 100.0)]), 0.0);
         assert!(sharpe_ratio(&curve) > 0.0);
+    }
+
+    #[tokio::test]
+    async fn a_run_without_signals_says_so_rather_than_reporting_only_zeros() {
+        // A balanced book: OBI is 0.0, so nothing crosses even the loosest threshold. The
+        // metrics are legitimately zero, and the census is what makes that readable.
+        let engine = BacktestingEngine::new();
+        let events = vec![
+            snapshot(&[(40_000.0, 1.0)], &[(40_000.1, 1.0)], T0),
+            trade(40_000.05, 1.0, T0 + 100),
+        ];
+
+        let report = engine
+            .run_simulation(&config(T0, T0 + 60_000, 10_000.0), &events)
+            .await
+            .expect("a replay with data in the window is a result, not an error");
+
+        assert_eq!(report.census.snapshots, 1);
+        assert_eq!(report.census.trade_prints, 1);
+        assert_eq!(report.census.funding_prints, 0);
+        assert_eq!(report.census.orders_submitted, 0, "no signal may be claimed");
+        assert_eq!(report.results.execution_quality, 0.0);
+        assert!(
+            report
+                .census
+                .rejected
+                .iter()
+                .any(|(reason, count)| reason == "BelowThreshold" && *count == 1),
+            "the reason has to be recorded, not just the absence of trades: {:?}",
+            report.census.rejected
+        );
+        assert_eq!(report.census.first_event_ms, T0);
+        assert_eq!(report.census.last_event_ms, T0 + 100);
+    }
+
+    #[tokio::test]
+    async fn the_report_serializes_with_its_census_and_reads_back() {
+        // `--report FILE.json` is the artifact the dashboard and a later comparison read,
+        // and every field added to it has to survive the derive graph. This is the check
+        // that a `Serialize` on a struct whose enum field lacks the derive would fail - the
+        // mistake that cost a build cycle once already.
+        let engine = BacktestingEngine::new();
+        let events = vec![snapshot(&[(40_000.0, 1.0)], &[(40_000.1, 1.0)], T0)];
+        let report = engine
+            .run_simulation(&config(T0, T0 + 60_000, 10_000.0), &events)
+            .await
+            .expect("replay");
+
+        let json = serde_json::to_string_pretty(&report).expect("a report must serialize");
+        let read_back: BacktestReport =
+            serde_json::from_str(&json).expect("a written report must read back");
+
+        assert_eq!(read_back.census.snapshots, report.census.snapshots);
+        assert_eq!(
+            read_back.census.rejected, report.census.rejected,
+            "rejection reasons are the diagnosis, they may not be lost in transit"
+        );
+        assert_eq!(read_back.config.symbols, vec!["BTCUSDT".to_string()]);
+        assert!(json.contains("\"census\""));
     }
 
     #[test]

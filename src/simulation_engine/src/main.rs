@@ -293,7 +293,94 @@ fn print_report(report: &BacktestReport) {
         report.equity_curve.len(),
         report.trade_log.len()
     );
+    println!("---------------------------------------- what the replay was handed ---");
+    println!(
+        "tape              {} event(s): {} book snapshot(s), {} trade print(s), {} funding row(s)",
+        report.census.events,
+        report.census.snapshots,
+        report.census.trade_prints,
+        report.census.funding_prints
+    );
+    println!(
+        "signals           {} order(s) queued at the maker price, {} filled, {} expired unfilled",
+        report.census.orders_submitted,
+        report.census.orders_filled,
+        report.census.orders_expired
+    );
+    if report.census.rejected.is_empty() {
+        println!("rejections        none recorded");
+    } else {
+        let reasons = report
+            .census
+            .rejected
+            .iter()
+            .map(|(reason, count)| format!("{} x{}", reason, count))
+            .collect::<Vec<_>>()
+            .join(", ");
+        println!("rejections        {}", reasons);
+    }
+    println!(
+        "costs             fees {:.4} USDT, funding {:+.4} USDT, notional traded {:.2} USDT",
+        report.census.fees_paid, report.census.funding_paid, report.census.traded_notional
+    );
+    println!(
+        "clock           {} .. {} ({} event(s) before the window were skipped)",
+        report.census.first_event_ms, report.census.last_event_ms, report.census.skipped_before_window
+    );
+    println!("diagnosis         {}", diagnosis(report));
     println!("-------------------------------------------------------------------");
+}
+
+/// Where the pipeline stopped, in the order the data has to travel through it. A run that
+/// measured nothing is not a loss - it is an unanswered question, and printing the number of
+/// zeros without this leaves the operator to guess which question to ask.
+fn diagnosis(report: &BacktestReport) -> String {
+    let census = &report.census;
+
+    if census.snapshots == 0 {
+        return "no order book rows in the window, so imbalance cannot be computed and no entry                 is possible: record with --book depth20 (or bookTicker) and check the recorder's                 summary for snapshots, not only trades".to_string();
+    }
+
+    if census.trade_prints == 0 {
+        return format!(
+            "the window holds {} book(s) and no trade print: a resting order is judged against              prints, so nothing can fill. Record a longer tape or widen --start/--end",
+            census.snapshots
+        );
+    }
+
+    if census.orders_submitted == 0 {
+        let reasons = census
+            .rejected
+            .iter()
+            .map(|(reason, count)| format!("{} x{}", reason, count))
+            .collect::<Vec<_>>()
+            .join(", ");
+        return format!(
+            "{} book(s) replayed and no imbalance crossed obi_threshold ({}): that is a reading              of the market, not a fault - --obi-threshold 0.2 diagnoses, it is not a parameter to keep",
+            census.snapshots,
+            if reasons.is_empty() { "no reason recorded".to_string() } else { reasons }
+        );
+    }
+
+    if census.orders_filled == 0 {
+        return format!(
+            "{} order(s) were queued behind the book and none filled: the queue ahead never              cleared. The pessimistic matcher is working as designed - a strategy whose edge is              smaller than its queue cannot be measured by relaxing the queue",
+            census.orders_submitted
+        );
+    }
+
+    if census.orders_expired > census.orders_filled {
+        return format!(
+            "{} of {} queued orders expired unfilled: fills, not signals, are the binding              constraint at this threshold",
+            census.orders_expired, census.orders_submitted
+        );
+    }
+
+    if report.results.total_trades == 0 {
+        return "entries filled but no round trip closed inside the window, so total_return says                 nothing yet - extend --end past the stops and targets".to_string();
+    }
+
+    "the replay consumed the tape, queued, filled and closed rounds: the numbers above are a      measurement of what this strategy did on this data".to_string()
 }
 
 fn write_report(path: &str, reports: &[BacktestReport]) -> Result<(), String> {

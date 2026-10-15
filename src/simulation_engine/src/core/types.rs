@@ -272,9 +272,43 @@ pub struct SimulationResult {
 pub struct BacktestReport {
     pub config: SimulationConfig,
     pub results: SimulationResult,
+    /// What the replay saw. `results` says what was measured; this says whether there was
+    /// anything to measure, and where in the pipeline it stopped.
+    pub census: ReplayCensus,
     pub equity_curve: Vec<(i64, f64)>,
     pub trade_log: Vec<TradeLogEntry>,
     pub timestamp: DateTime<Utc>,
+}
+
+/// What the replay actually looked at, counted while it ran.
+///
+/// A report of zeros is ambiguous: no data, no signals, and no fills all print the same
+/// `total_return: 0`. These counters separate the three, which is why they travel with the
+/// report - and into `--report FILE.json` - instead of living only in the log of whichever
+/// machine ran the replay. Nothing here is read by a gate: the metrics stay
+/// `SimulationResult`'s business, so adding this cannot change a verdict.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReplayCensus {
+    /// Events inside the window that the replay consumed.
+    pub events: usize,
+    pub snapshots: usize,
+    pub trade_prints: usize,
+    pub funding_prints: usize,
+    /// Entries the strategy queued in the shadow book.
+    pub orders_submitted: usize,
+    pub orders_filled: usize,
+    pub orders_expired: usize,
+    /// Events before the requested window start - "the tape starts earlier" is a
+    /// different statement from "the tape is empty".
+    pub skipped_before_window: usize,
+    /// Why entries were refused, by reason, sorted so two runs compare byte for byte.
+    pub rejected: Vec<(String, usize)>,
+    pub funding_paid: f64,
+    pub fees_paid: f64,
+    pub traded_notional: f64,
+    /// The replay's own clock at the first and last consumed event, in milliseconds.
+    pub first_event_ms: i64,
+    pub last_event_ms: i64,
 }
 
 /// Trade log entry
