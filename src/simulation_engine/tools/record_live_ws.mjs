@@ -47,6 +47,7 @@ function usage(message) {
   --minutes <N>         stop after N minutes; 0 runs until Ctrl-C (default 0)
   --rotate-minutes <N>  start a new .jsonl file every N minutes  (default 10)
   --progress <N>        print a line every N events             (default 5000)
+  --url <WSS>           override the endpoint entirely (proxy, mirror, diagnostics)
   --help                this text
 
 Files land as events-<UTC stamp>.jsonl so a long capture is several lake-readable files
@@ -63,6 +64,7 @@ function parseArgs(argv) {
     minutes: 0,
     rotateMinutes: 10,
     progress: 5000,
+    url: null,
   };
   for (let i = 0; i < argv.length; i += 1) {
     const flag = argv[i];
@@ -100,6 +102,9 @@ function parseArgs(argv) {
       case '--progress':
         options.progress = Number(value());
         break;
+      case '--url':
+        options.url = value();
+        break;
       default:
         usage(`unknown option ${flag}`);
     }
@@ -113,6 +118,9 @@ function parseArgs(argv) {
     if (!Number.isFinite(options[key]) || options[key] < 0) usage(`--${key} expects a number >= 0`);
   }
   if (options.rotateMinutes === 0) usage('--rotate-minutes must be greater than zero');
+  if (options.url !== null && !options.url.startsWith('wss://')) {
+    usage('--url must be a wss:// address');
+  }
   options.book = options.book === 'bookticker' ? 'bookTicker' : 'depth20';
   return options;
 }
@@ -130,9 +138,24 @@ for (const symbol of lower) {
   if (options.market === 'um') streams.push(`${symbol}@markPrice@1s`);
 }
 
-const host =
-  options.market === 'um' ? 'fstream.binance.com' : 'data-stream.binance.vision';
-const url = `wss://${host}/stream?streams=${streams.join('/')}`;
+// Two routes are tried in order, and the reason is worth the code: the venue publishes its
+// public market streams under a `market/` path as well as the plain one, so a recorder
+// hard-wired to either can be refused by a server that is otherwise perfectly healthy. The
+// index advances only when a connection never reached `open`, which keeps the endpoint that
+// worked across the venue's daily socket close instead of bouncing between the two.
+const query = `?streams=${streams.join('/')}`;
+const endpoints = options.url
+  ? [options.url]
+  : options.market === 'um'
+    ? [
+        `wss://fstream.binance.com/market/stream${query}`,
+        `wss://fstream.binance.com/stream${query}`,
+      ]
+    : [
+        `wss://data-stream.binance.vision/stream${query}`,
+        `wss://stream.binance.com:9443/stream${query}`,
+      ];
+let endpointIndex = 0;
 
 mkdirSync(options.data, { recursive: true });
 
@@ -277,10 +300,13 @@ let socket = null;
 
 function connect() {
   if (stopping) return;
+  const url = endpoints[endpointIndex % endpoints.length];
+  let opened = false;
   socket = new WebSocket(url);
 
   socket.addEventListener('open', () => {
-    console.log(`connected to ${host} (${streams.length} streams)`);
+    opened = true;
+    console.log(`connected to ${url.split('?')[0]} (${streams.length} streams)`);
   });
 
   socket.addEventListener('message', (event) => {
@@ -304,6 +330,10 @@ function connect() {
 
   socket.addEventListener('close', () => {
     if (stopping) return;
+    if (!opened && endpoints.length > 1) {
+      endpointIndex += 1;
+      console.log(`no session from ${url.split('?')[0]}; switching to the other endpoint`);
+    }
     totals.reconnects += 1;
     const delay = Math.min(15_000, 500 * 2 ** Math.min(totals.reconnects, 5));
     console.log(`socket closed; reconnecting in ${delay} ms`);
