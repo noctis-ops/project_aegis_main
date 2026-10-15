@@ -362,6 +362,8 @@ mod tests {
             equity_curve: vec![],
             trade_log: vec![],
             timestamp: chrono::Utc::now(),
+            // Synthesised report: no replay ran behind it, so no census to read.
+            census: crate::core::ReplayCensus::default(),
         };
 
         assert!(!pipeline.validate_robustness_results(&[report]).unwrap());

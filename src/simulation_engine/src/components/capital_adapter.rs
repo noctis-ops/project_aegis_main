@@ -214,6 +214,8 @@ fn report_with_fills(fills: &[(f64, f64)]) -> crate::core::BacktestReport {
             })
             .collect(),
         timestamp: chrono::Utc::now(),
+        // Built by hand rather than replayed, so there is no tape to report on.
+        census: crate::core::ReplayCensus::default(),
     }
 }
 
