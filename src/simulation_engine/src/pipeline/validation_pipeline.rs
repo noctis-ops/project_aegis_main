@@ -393,13 +393,16 @@ mod tests {
         std::fs::create_dir_all(&directory).expect("temp dir");
 
         // One book that clears any threshold in the swept range, plus the print that
-        // fills the queued bid and the one that reaches the target.
+        // fills the queued bid and the one that reaches the target. The prints are 8.0 BTC
+        // because that is the size the book displays at 40000: price-time priority says a
+        // smaller aggressor is absorbed by the queue in front of us, so a fixture that
+        // wanted a fill had to sweep the level - and one that only touched it must not fill.
         let lines = [
             r#"{"symbol":"BTCUSDT","timestamp":1700000001000,"bids":[[40000.0,8.0]],"asks":[[40001.0,0.5]]}"#,
-            r#"{"symbol":"BTCUSDT","timestamp":1700000001100,"price":40000.0,"quantity":1.0,"side":"sell"}"#,
+            r#"{"symbol":"BTCUSDT","timestamp":1700000001100,"price":40000.0,"quantity":8.0,"side":"sell"}"#,
             r#"{"symbol":"BTCUSDT","timestamp":1700000002000,"price":40401.0,"quantity":1.0,"side":"buy"}"#,
             r#"{"symbol":"BTCUSDT","timestamp":1700000003000,"bids":[[40000.0,8.0]],"asks":[[40001.0,0.5]]}"#,
-            r#"{"symbol":"BTCUSDT","timestamp":1700000003100,"price":40000.0,"quantity":1.0,"side":"sell"}"#,
+            r#"{"symbol":"BTCUSDT","timestamp":1700000003100,"price":40000.0,"quantity":8.0,"side":"sell"}"#,
             // Round two clears its target as well. Both rounds have to be profitable
             // here: the robustness gate below is only meaningful against a run that made
             // money, which is itself one of the things this test pins.

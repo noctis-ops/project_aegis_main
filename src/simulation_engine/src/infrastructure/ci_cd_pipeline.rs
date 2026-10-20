@@ -328,13 +328,15 @@ mod tests {
 
         let now = Utc::now();
         let now_ms = now.timestamp_millis();
+        // The entry print has to clear the 8.0 BTC the book displays at 40000: a touch is
+        // not a fill while that size is queued in front of us.
         let rows = [
             format!(
                 r#"{{"symbol":"BTCUSDT","timestamp":{},"bids":[[40000.0,8.0]],"asks":[[40001.0,0.5]]}}"#,
                 now_ms - 60_000
             ),
             format!(
-                r#"{{"symbol":"BTCUSDT","timestamp":{},"price":40000.0,"quantity":1.0,"side":"sell"}}"#,
+                r#"{{"symbol":"BTCUSDT","timestamp":{},"price":40000.0,"quantity":8.0,"side":"sell"}}"#,
                 now_ms - 59_000
             ),
             format!(

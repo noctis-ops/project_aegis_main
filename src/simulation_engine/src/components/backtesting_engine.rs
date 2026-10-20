@@ -813,6 +813,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_run_that_traded_nothing_books_no_cost_not_even_a_negative_zero() {
+        // A cost printed as "-0.0000" reads like money the venue paid back. Zero has one
+        // sign in a report an operator triages under time pressure, and the run that
+        // traded nothing is exactly the run whose numbers get squinted at.
+        let engine = BacktestingEngine::new();
+        let events = vec![snapshot(&[(40_000.0, 1.0)], &[(40_000.1, 1.0)], T0)];
+        let report = engine
+            .run_simulation(&config(T0, T0 + 60_000, 10_000.0), &events)
+            .await
+            .expect("a book is enough to produce a report");
+
+        assert!(report.trade_log.is_empty(), "no fill, so no booked cost");
+        for (name, value) in [
+            ("fees", report.census.fees_paid),
+            ("funding", report.census.funding_paid),
+            ("notional", report.census.traded_notional),
+        ] {
+            assert!(
+                !(value == 0.0 && value.is_sign_negative()),
+                "{name} has to be +0.0 when nothing was traded, and a signed zero is not that"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn a_touch_that_does_not_clear_the_level_is_not_a_fill() {
         // The market printed at our bid but only half of what was displayed there traded,
         // so the traders ahead of us absorbed it. Filling here would book an execution the

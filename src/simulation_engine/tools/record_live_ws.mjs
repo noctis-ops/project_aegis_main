@@ -41,7 +41,7 @@ function usage(message) {
 
   --data <DIR>          lake directory to write into            (default ./data)
   --market um|spot      USDⓈ-M futures or spot stream host      (default um)
-  --symbols <A,B,...>   symbols to record                        (default BTCUSDT)
+  --symbols <A,B,...>   symbols to record; --symbol is the same option             (default BTCUSDT)
   --book depth20|bookTicker  book source: 20 price levels at 100 ms, or best bid/ask
                                                                (default depth20)
   --minutes <N>         stop after N minutes; 0 runs until Ctrl-C (default 0)
@@ -84,6 +84,9 @@ function parseArgs(argv) {
       case '--market':
         options.market = value().toLowerCase();
         break;
+      // `--symbol` is what an operator types when recording one instrument, and refusing
+      // it costs a whole run: the recorder is only ever started once per capture.
+      case '--symbol':
       case '--symbols':
         options.symbols = value()
           .split(',')
