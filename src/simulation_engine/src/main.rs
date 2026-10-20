@@ -319,6 +319,16 @@ fn print_report(report: &BacktestReport) {
             .join(", ");
         println!("rejections        {}", reasons);
     }
+    let nearest = match report.census.nearest_print_pct {
+        Some(distance) => format!("{:.4}% away", distance * 100.0),
+        None => "no print to compare".to_string(),
+    };
+    println!(
+        "queue             {} print(s) while an order was live, {} at or through a level, nearest {}",
+        report.census.prints_while_orders_live,
+        report.census.prints_at_or_through_level,
+        nearest
+    );
     println!(
         "costs             fees {:.4} USDT, funding {:+.4} USDT, notional traded {:.2} USDT",
         report.census.fees_paid, report.census.funding_paid, report.census.traded_notional
@@ -338,12 +348,17 @@ fn diagnosis(report: &BacktestReport) -> String {
     let census = &report.census;
 
     if census.snapshots == 0 {
-        return "no order book rows in the window, so imbalance cannot be computed and no entry                 is possible: record with --book depth20 (or bookTicker) and check the recorder's                 summary for snapshots, not only trades".to_string();
+        return "no order book rows in the window, so imbalance cannot be computed and no \
+                entry is possible: record with --book depth20 (or bookTicker) and check the \
+                recorder's summary for snapshots, not only trades"
+            .to_string();
     }
 
     if census.trade_prints == 0 {
         return format!(
-            "the window holds {} book(s) and no trade print: a resting order is judged against              prints, so nothing can fill. Record a longer tape or widen --start/--end",
+            "the window holds {} book(s) and no trade print: a resting order is judged \
+             against prints, so nothing can fill. Record a longer tape or widen \
+             --start/--end",
             census.snapshots
         );
     }
@@ -356,31 +371,62 @@ fn diagnosis(report: &BacktestReport) -> String {
             .collect::<Vec<_>>()
             .join(", ");
         return format!(
-            "{} book(s) replayed and no imbalance crossed obi_threshold ({}): that is a reading              of the market, not a fault - --obi-threshold 0.2 diagnoses, it is not a parameter to keep",
+            "{} book(s) replayed and no imbalance crossed obi_threshold ({}): that is a \
+             reading of the market, not a fault - --obi-threshold 0.2 diagnoses, it is not a \
+             parameter to keep",
             census.snapshots,
             if reasons.is_empty() { "no reason recorded".to_string() } else { reasons }
         );
     }
 
     if census.orders_filled == 0 {
+        if census.prints_while_orders_live == 0 {
+            return format!(
+                "{} order(s) were queued and {} print(s) exist in the window, yet no print \
+                 arrived while an order was live: the tape is coarser than the {} ms lifetime \
+                 a signal is given. Record with --book depth20 (ten books a second) - the \
+                 matcher cannot be blamed for a gap in the feed",
+                census.orders_submitted, census.trade_prints,
+                simulation_engine::core::SIM_ORDER_TTL_MS
+            );
+        }
+        if census.prints_at_or_through_level == 0 {
+            let away = match census.nearest_print_pct {
+                Some(distance) => format!("{:.4}% away", distance * 100.0),
+                None => "not measured".to_string(),
+            };
+            return format!(
+                "{} order(s) were queued at the touch and the market never printed there: \
+                 the closest print came {}. The quote we joined had already moved - that is \
+                 what a stale signal looks like on this tape, and it is a market reading \
+                 rather than a matching failure",
+                census.orders_submitted, away
+            );
+        }
         return format!(
-            "{} order(s) were queued behind the book and none filled: the queue ahead never              cleared. The pessimistic matcher is working as designed - a strategy whose edge is              smaller than its queue cannot be measured by relaxing the queue",
-            census.orders_submitted
+            "{} print(s) reached a level we were queued at and {} order(s) still did not \
+             fill: the size displayed in front of us never cleared. That is the queue, \
+             honestly modelled - a strategy whose edge is smaller than its queue position \
+             cannot be measured by relaxing the queue",
+            census.prints_at_or_through_level, census.orders_submitted
         );
     }
 
     if census.orders_expired > census.orders_filled {
         return format!(
-            "{} of {} queued orders expired unfilled: fills, not signals, are the binding              constraint at this threshold",
+            "{} of {} queued orders expired unfilled: fills, not signals, are the binding \
+             constraint at this threshold",
             census.orders_expired, census.orders_submitted
         );
     }
 
     if report.results.total_trades == 0 {
-        return "entries filled but no round trip closed inside the window, so total_return says                 nothing yet - extend --end past the stops and targets".to_string();
+        return "entries filled but no round trip closed inside the window, so total_return \
+                says nothing yet - extend --end past the stops and targets".to_string();
     }
 
-    "the replay consumed the tape, queued, filled and closed rounds: the numbers above are a      measurement of what this strategy did on this data".to_string()
+    "the replay consumed the tape, queued, filled and closed rounds: the numbers above are \
+     a measurement of what this strategy did on this data".to_string()
 }
 
 fn write_report(path: &str, reports: &[BacktestReport]) -> Result<(), String> {

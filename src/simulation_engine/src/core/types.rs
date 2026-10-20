@@ -301,6 +301,17 @@ pub struct ReplayCensus {
     pub orders_submitted: usize,
     pub orders_filled: usize,
     pub orders_expired: usize,
+    /// Prints that arrived while at least one entry order was live. Zero here means the
+    /// tape's cadence is coarser than an order's lifetime - a recording fact, not a
+    /// market one, and the difference decides what to fix.
+    pub prints_while_orders_live: usize,
+    /// Of those prints, how many printed at or through a level we were queued at.
+    /// Non-zero with `orders_filled == 0` is the queue holding us, which is a result;
+    /// zero here is a level the market never traded.
+    pub prints_at_or_through_level: usize,
+    /// Closest a print came to a live order's quoted price, as a fraction of that price
+    /// (1.0e-4 = 0.01%). `None` when no print arrived to compare against.
+    pub nearest_print_pct: Option<f64>,
     /// Events before the requested window start - "the tape starts earlier" is a
     /// different statement from "the tape is empty".
     pub skipped_before_window: usize,

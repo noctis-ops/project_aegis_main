@@ -429,6 +429,7 @@ impl RunState {
             .collect();
         rejected.sort();
 
+        let queue = self.matching.statistics();
         let census = ReplayCensus {
             events: self.events,
             snapshots: self.snapshots,
@@ -437,6 +438,9 @@ impl RunState {
             orders_submitted: self.submitted,
             orders_filled: self.filled,
             orders_expired: self.expired,
+            prints_while_orders_live: queue.prints_while_orders_live,
+            prints_at_or_through_level: queue.prints_at_or_through_level,
+            nearest_print_pct: queue.nearest_print_pct,
             skipped_before_window: self.skipped_before_window,
             rejected,
             funding_paid: self.funding_paid,
@@ -809,6 +813,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_touch_that_does_not_clear_the_level_is_not_a_fill() {
+        // The market printed at our bid but only half of what was displayed there traded,
+        // so the traders ahead of us absorbed it. Filling here would book an execution the
+        // venue never gave, which is the failure mode a shadow ledger exists to avoid.
+        let engine = BacktestingEngine::new();
+        let events = vec![
+            snapshot(
+                &[(40_000.0, 4.0), (39_999.0, 4.0)],
+                &[(40_001.0, 0.5)],
+                T0 + 1_000,
+            ),
+            trade(40_000.0, 0.5, T0 + 1_050),
+        ];
+
+        let report = engine
+            .run_simulation(&config(T0, T0 + 60_000, 10_000.0), &events)
+            .await
+            .expect("a replay with events must produce a report");
+
+        assert_eq!(report.census.orders_submitted, 1, "the signal was valid");
+        assert_eq!(report.census.orders_filled, 0, "the queue did not clear");
+        assert!(report.trade_log.is_empty(), "no fill, so nothing to book");
+        assert_eq!(
+            report.census.prints_at_or_through_level, 1,
+            "the price did reach the level; the report has to say so rather than call it a miss"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_print_through_the_level_fills_at_the_quoted_price() {
+        // Printing *through* a resting bid executes it: refusing the fill because the print
+        // was not at exactly our price is how a matcher loses every trade on a real tape.
+        // The fill is booked at our quoted price, never worse.
+        let engine = BacktestingEngine::new();
+        let events = vec![
+            snapshot(&[(40_000.0, 4.0)], &[(40_001.0, 0.4)], T0 + 1_000),
+            trade(39_990.0, 4.0, T0 + 1_050),
+        ];
+
+        let report = engine
+            .run_simulation(&config(T0, T0 + 60_000, 10_000.0), &events)
+            .await
+            .expect("a replay with events must produce a report");
+
+        assert_eq!(report.census.orders_filled, 1, "a sweep of the level is a fill");
+        assert_eq!(report.trade_log[0].price, 40_000.0, "at our limit, not at the print");
+    }
+
+    #[tokio::test]
     async fn a_full_round_trip_is_measured_not_assumed() {
         let engine = BacktestingEngine::new();
         let events = vec![
@@ -819,8 +872,10 @@ mod tests {
                 &[(40_001.0, 0.5)],
                 T0 + 1_000,
             ),
-            // The print that reaches our queued bid, so the entry fills at 40000.
-            trade(40_000.0, 0.5, T0 + 1_050),
+            // A seller has to trade the 4.0 BTC already displayed at 40000 before the size
+            // queued behind it is reached. That is what a queue means, and it fills us at
+            // our own quoted 40000, not at the print.
+            trade(40_000.0, 4.0, T0 + 1_050),
             // Pushes through the 1% target (40400) for the exit.
             trade(40_401.0, 0.5, T0 + 2_000),
         ];
