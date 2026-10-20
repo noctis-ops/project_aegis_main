@@ -65,6 +65,12 @@ instead of writing them.
 
 **Running a measurement (`cargo run --release -- <args>`)**
 
+Run it from this directory, where `Cargo.toml` is, and let cargo resolve the artifact: the
+release binary is `target/release/simulation-engine.exe` - **with a dash**, because the
+package is named `simulation-engine`, while the crate name `simulation_engine` (underscore)
+names only the library. The full paths of `--data` and `--report` are read relative to the
+directory you launched from, so spelling them out removes another guess.
+
 | mode | what it does |
 |------|--------------|
 | `--backtest` | replays the lake over the window and prints what the replay measured (default) |

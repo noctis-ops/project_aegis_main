@@ -62,6 +62,11 @@ node src\simulation_engine\tools\record_live_ws.mjs --data .\data --minutes 30
 
 **تشغيل قياس (`cargo run --release -- <args>`)**
 
+شغّله من هذا المجلد حيث يوجد `Cargo.toml` ودع cargo يحلّ مسار الناتج: الملف التنفيذي هو
+`target/release/simulation-engine.exe` **بشرطة**، لأن اسم الحزمة `simulation-engine`، بينما
+اسم المكتبة `simulation_engine` (شرطة سفلية) يشير إلى المكتبة لا إلى الملف التنفيذي. ومسارات
+`--data` و`--report` تُقرأ نسبةً إلى المجلد الذي أطلقت منه الأمر، فكتابتها كاملةً تلغي تخمينًا آخر.
+
 | الوضع | ما يفعله |
 |-------|----------|
 | `--backtest` | يعيد تشغيل البحيرة على النافذة ويطبع نتائج الإعادة (الافتراضي) |
