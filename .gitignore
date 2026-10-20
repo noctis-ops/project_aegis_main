@@ -11,7 +11,11 @@ node_modules/
 # Recordings for the Layer 5 data lake and the reports a run writes next to them.
 # Untracked on purpose: a captured tape is gigabytes of market data, and a committed
 # fixture would become the thing the gates are scored against.
-/data/
-/runs/
+# The operator names the folders at run time (--data .\data_test, --report .\runs\...), so
+# ignore the family rather than one spelling: a gigabyte tape must never be catchable by a
+# careless `git add .`, and no such file is tracked in this repository.
+/data*/
+/runs*/
+*.jsonl
 *.log
 .next/

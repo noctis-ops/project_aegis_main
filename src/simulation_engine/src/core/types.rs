@@ -273,7 +273,9 @@ pub struct BacktestReport {
     pub config: SimulationConfig,
     pub results: SimulationResult,
     /// What the replay saw. `results` says what was measured; this says whether there was
-    /// anything to measure, and where in the pipeline it stopped.
+    /// anything to measure, and where in the pipeline it stopped. Reports written before
+    /// this field existed carry no census at all, and the audit files must still load.
+    #[serde(default)]
     pub census: ReplayCensus,
     pub equity_curve: Vec<(i64, f64)>,
     pub trade_log: Vec<TradeLogEntry>,
@@ -287,7 +289,8 @@ pub struct BacktestReport {
 /// report - and into `--report FILE.json` - instead of living only in the log of whichever
 /// machine ran the replay. Nothing here is read by a gate: the metrics stay
 /// `SimulationResult`'s business, so adding this cannot change a verdict.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ReplayCensus {
     /// Events inside the window that the replay consumed.
     pub events: usize,
