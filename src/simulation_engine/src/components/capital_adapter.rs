@@ -1,6 +1,6 @@
 //! Capital Adapter for simulation testing
 
-use crate::core::{CapitalAdaptationTestCase, BacktestReport};
+use crate::core::{sum_reported, CapitalAdaptationTestCase, BacktestReport};
 use tracing::{debug, error, info};
 
 /// Capital Adapter for testing different capital scenarios
@@ -153,7 +153,8 @@ impl CapitalAdapter {
         }
         
         // Calculate average performance
-        let avg_return: f64 = results.iter().map(|r| r.results.total_return).sum::<f64>() / results.len() as f64;
+        let avg_return =
+            sum_reported(results.iter().map(|r| r.results.total_return)) / results.len() as f64;
         let best_return = results.iter().map(|r| r.results.total_return).fold(f64::NEG_INFINITY, f64::max);
         
         // A ratio of returns is only meaningful against a run that made money: with

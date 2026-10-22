@@ -9,7 +9,10 @@
 
 use crate::components::{BacktestingEngine, DataLake};
 use crate::core::constants::{MAX_ACCEPTABLE_PARAMETER_DEGRADATION, OVERFITTING_TEST_RANGE};
-use crate::core::{BacktestReport, MarketEvent, RobustnessTestParams, SimulationConfig, SimulationError};
+use crate::core::{
+    sum_reported, BacktestReport, MarketEvent, RobustnessTestParams, SimulationConfig,
+    SimulationError,
+};
 use tracing::{debug, error, info, warn};
 
 /// Validation pipeline for robustness and overfitting testing
@@ -230,7 +233,8 @@ impl ValidationPipeline {
         }
 
         // Calculate performance statistics
-        let avg_return: f64 = reports.iter().map(|r| r.results.total_return).sum::<f64>() / reports.len() as f64;
+        let avg_return =
+            sum_reported(reports.iter().map(|r| r.results.total_return)) / reports.len() as f64;
         let best_return = reports.iter().map(|r| r.results.total_return).fold(f64::NEG_INFINITY, f64::max);
 
         // Check if performance degrades gracefully

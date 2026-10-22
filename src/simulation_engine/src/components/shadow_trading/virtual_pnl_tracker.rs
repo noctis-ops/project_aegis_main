@@ -1,6 +1,6 @@
 //! Virtual PnL Tracker for Shadow Trading
 
-use crate::core::{SimulationError, TradeIntent, TradeSide};
+use crate::core::{sum_reported, SimulationError, TradeIntent, TradeSide};
 use tracing::info;
 
 /// Quantities at or below this are treated as flat: float dust left over by a
@@ -258,7 +258,7 @@ impl VirtualPnlTracker {
     /// is identically zero, so a backtest's "realized" PnL was only the fee bill -
     /// a profitable strategy was reported as a loss and a break-even one as a drawdown.
     pub fn get_realized_pnl(&self) -> f64 {
-        let fees: f64 = self.trades.iter().map(|trade| trade.fees).sum();
+        let fees = sum_reported(self.trades.iter().map(|trade| trade.fees));
         self.realized_gross_pnl - fees
     }
     
@@ -286,15 +286,24 @@ impl VirtualPnlTracker {
     
     /// Get current exposure by symbol
     pub fn get_exposure_by_symbol(&self, symbol: &str) -> f64 {
-        self.positions.iter()
-            .filter(|p| p.symbol == symbol)
-            .map(|p| p.quantity * match p.side {
-                TradeSide::Buy => 1.0,
-                TradeSide::Sell => -1.0,
-            })
-            .sum()
+        // Signed exposure: a long is positive, a short negative. Summed with the report's own
+        // helper because a flat book has to be `+0.0` - an empty float `sum()` yields `-0.0`,
+        // and this quantity is multiplied straight into a funding charge, so the sign is not
+        // a printing detail here.
+        sum_reported(
+            self.positions
+                .iter()
+                .filter(|position| position.symbol == symbol)
+                .map(|position| {
+                    let signed = match position.side {
+                        TradeSide::Buy => 1.0,
+                        TradeSide::Sell => -1.0,
+                    };
+                    position.quantity * signed
+                }),
+        )
     }
-    
+
     /// Check if tracker is initialized
     pub fn is_initialized(&self) -> bool {
         self.is_initialized

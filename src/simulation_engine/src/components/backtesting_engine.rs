@@ -18,9 +18,9 @@ use crate::components::strategy::{
     EntryDecision, ExitReason, ObiSimStrategy, Rejection, TriggeredExit,
 };
 use crate::core::{
-    BacktestReport, FundingRateEvent, MarketEvent, OrderBookSnapshot, ReplayCensus,
-    SimulationConfig, SimulationError, SimulationResult, TradeAction, TradeEvent, TradeIntent,
-    TradeLogEntry,
+    sum_reported, BacktestReport, FundingRateEvent, MarketEvent, OrderBookSnapshot,
+    ReplayCensus, SimulationConfig, SimulationError, SimulationResult, TradeAction, TradeEvent,
+    TradeIntent, TradeLogEntry,
 };
 use crate::core::constants::SECONDS_PER_YEAR;
 use chrono::Utc;
@@ -446,7 +446,7 @@ impl RunState {
             funding_paid: self.funding_paid,
             // The log is what the run booked; summing it beats keeping a parallel counter
             // that could drift from the entries it is supposed to total.
-            fees_paid: self.trade_log.iter().map(|entry| entry.fees).sum(),
+            fees_paid: sum_reported(self.trade_log.iter().map(|entry| entry.fees)),
             traded_notional: self.traded_notional,
             first_event_ms: self.first_event_ms,
             last_event_ms: self.current_time,
@@ -722,8 +722,10 @@ pub fn win_rate(legs: &[f64]) -> f64 {
 
 /// Gross wins over gross losses, capped so the report stays serializable.
 pub fn profit_factor(legs: &[f64]) -> f64 {
-    let wins: f64 = legs.iter().filter(|&&leg| leg > 0.0).map(|leg| *leg).sum();
-    let losses: f64 = legs.iter().filter(|&&leg| leg < 0.0).map(|leg| -leg).sum();
+    // Both halves go through the report sum: with no closed legs each would be `-0.0`, and
+    // `losses <= 0.0` then hands back `0.0` while `wins / losses` would have been `-0.0`.
+    let wins = sum_reported(legs.iter().filter(|&&leg| leg > 0.0).copied());
+    let losses = sum_reported(legs.iter().filter(|&&leg| leg < 0.0).map(|leg| -leg));
 
     if losses <= 0.0 {
         return if wins > 0.0 { crate::core::constants::MAX_PROFIT_FACTOR } else { 0.0 };
@@ -736,7 +738,9 @@ pub fn mean(values: &[f64]) -> f64 {
     if values.is_empty() {
         return 0.0;
     }
-    values.iter().sum::<f64>() / values.len() as f64
+    // The empty case is guarded above because 0.0 / 0 is NaN, not because of the sign;
+    // `sum_reported` is what keeps a series of all-zeros a `+0.0` mean instead of `-0.0`.
+    sum_reported(values.iter().copied()) / values.len() as f64
 }
 
 #[cfg(test)]
@@ -813,10 +817,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_run_that_traded_nothing_books_no_cost_not_even_a_negative_zero() {
-        // A cost printed as "-0.0000" reads like money the venue paid back. Zero has one
-        // sign in a report an operator triages under time pressure, and the run that
-        // traded nothing is exactly the run whose numbers get squinted at.
+    async fn a_run_that_traded_nothing_reports_every_zero_with_one_sign() {
+        // A cost printed as "-0.0000" reads like money the venue paid back, and no gate can
+        // catch it because `-0.0 == 0.0`. That is why this is pinned on the printed figures
+        // rather than on the arithmetic: the run that traded nothing is exactly the run an
+        // operator squints at, and every zero in it has to look like zero.
         let engine = BacktestingEngine::new();
         let events = vec![snapshot(&[(40_000.0, 1.0)], &[(40_000.1, 1.0)], T0)];
         let report = engine
@@ -829,7 +834,16 @@ mod tests {
             ("fees", report.census.fees_paid),
             ("funding", report.census.funding_paid),
             ("notional", report.census.traded_notional),
+            ("total_return", report.results.total_return),
+            ("sharpe_ratio", report.results.sharpe_ratio),
+            ("max_drawdown", report.results.max_drawdown),
+            ("win_rate", report.results.win_rate),
+            ("profit_factor", report.results.profit_factor),
+            ("avg_trade_duration", report.results.avg_trade_duration),
+            ("slippage_impact", report.results.slippage_impact),
+            ("execution_quality", report.results.execution_quality),
         ] {
+            assert!(value.is_finite(), "{name} has to be a number a report can print");
             assert!(
                 !(value == 0.0 && value.is_sign_negative()),
                 "{name} has to be +0.0 when nothing was traded, and a signed zero is not that"
